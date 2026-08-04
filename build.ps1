@@ -7,6 +7,7 @@
 #      避免把用户本地数据（industry_dict.json、续保明细等）打包进 exe。
 
 $ErrorActionPreference = "Stop"
+$projectDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 # 强制控制台 UTF-8 编码，防止中文乱码
 chcp 65001 > $null
@@ -24,10 +25,9 @@ if (Test-Path $venvPython) {
     if (-not (Test-Path $python)) { $python = "python" }
     Write-Host "使用系统 Python: $python" -ForegroundColor Yellow
 }
-$projectDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-$buildDir = Join-Path $env:TEMP "maintenance-repurchase-build-$timestamp"
+$buildDir = Join-Path $env:TEMP "contract-data-processing-build-$timestamp"
 
 Write-Host "准备干净构建目录: $buildDir" -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null

@@ -1,3 +1,50 @@
+2026年8月4日 更新日志 — v3.0.0.0
+
+【架构重构】
+
+UI 全面重构：tkinter/customtkinter 迁移至 PySide6 (Qt)
+- 全部界面组件改用 PySide6（QMainWindow/QTableView/QPushButton 等），样式系统改为 QSS
+- 窗口布局由传统 Tab 切换改为左侧 Sidebar 导航 + 顶部状态栏，新增概览页（汇总卡片 + 最近操作）
+- 新增 ui/styles.py 全局 QSS 样式、ui/settings.py 应用设置、ui/msg_box.py 统一消息框、ui/dialog_utils.py 对话框工具
+
+【新增功能】
+
+日志系统完善
+- ui/logger.py：运行日志按天归档（run_YYYYMMDD.log）、错误日志汇总（error.log），均支持 5MB 自动轮转
+- ui/log_view.py：主窗口可查看运行日志；全局异常钩子覆盖主线程/子线程/Qt 消息
+
+重点客户体系
+- ui/starred_cache.py：重点客户持久化到 starred_customers.xlsx
+- ui/starred_view.py、ui/starred_input_dialog.py：重点客户查看/手动录入弹窗
+- ui/expiry_starred_view.py：重点客户过保合同弹窗（Tab3 联动）
+
+Tab3 过保情况独立化
+- 独立 Excel 数据源与导入流程，ui/column_filter_popup.py 支持动态列筛选
+- 新增过保状态（含重点客户过保筛选）
+
+Tab4 过保分析增强
+- 续保判定逻辑、续保明细管理（renewal_details.xlsx）
+- 大礼包渠道标记（gift_channels.xlsx）、过保合同表格状态着色
+
+Tab5 产品销量合并规则
+- 支持产品名称合并（merge_rules.json），ui/merge_dialog.py 编辑规则
+
+Tab6 行业统计下钻
+- 一级行业 → 二级行业 → 客户明细逐层下钻
+- ui/industry_dict.py 行业字典管理、ui/industry_overrides.py 人工覆盖规则（industry_overrides.json）
+
+【删减功能】
+
+删除 tab_customer_type.py（客户类型辅助模块）
+- 原客户类型统计能力并入客户分类/客户画像 Tab
+
+【文档更新】
+
+- README.md、RELEASE.md、build.ps1 同步更新至 PySide6 架构
+- 打包脚本改为 --enable-plugin=pyside6
+
+---
+
 2026年7月29日 更新日志 — v2.3.1.17
 
 【优化功能】
