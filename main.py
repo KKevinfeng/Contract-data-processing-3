@@ -56,8 +56,35 @@ def main():
         setup_app_style(app)
 
         from ui import MaintenanceApp
+        from ui.progress_popup import ProgressPopup
+        from PySide6.QtCore import QTimer
+
         window = MaintenanceApp()
         window.show()
+
+        # 启动时自动加载历史数据缓存（若存在）。
+        # 说明：
+        #  - 缓存加载使用线程 + QTimer 轮询，必须在事件循环（app.exec）运行后才能推进，
+        #    因此用 singleShot 延迟到 show 之后、事件循环内触发，不阻塞窗口显示。
+        #  - 若检测到有效缓存，先展示"正在读取历史数据"启动弹窗；缓存内部各数据源会
+        #    自行更新进度，全部加载完成后由窗口统一关闭该启动弹窗（见 _finish_cache_load）。
+        from ui import cache_manager
+
+        snap = cache_manager.scan_cache()
+        cache_manager.clean_junk_files(snap)
+        has_cache = snap.main.valid or snap.expiry.valid
+
+        if has_cache:
+            # 用户点击 × 关闭弹窗时取消后台缓存导入（见 _cancel_cache_load）
+            splash = ProgressPopup(
+                window, title="正在读取历史数据...", on_close=window._cancel_cache_load
+            )
+            splash.set_progress(0.0, "正在检查历史数据缓存...")
+            window._startup_splash = splash
+            QTimer.singleShot(120, window.try_load_all_caches)
+        else:
+            log_info("未检测到有效缓存，等待手动导入")
+
         log_info("MaintenanceApp 初始化完成，进入主循环")
 
         sys.exit(app.exec())

@@ -16,6 +16,7 @@ from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont
 from ui.expiry_starred_view import ExpiryStarredView
 from ui.progress_popup import ProgressPopup
 from ui.column_filter_popup import ColumnFilterPopup
+from ui import cache_manager
 from ui.logger import log_error, log_info
 from utils import classify_contract, export_to_csv
 
@@ -38,6 +39,7 @@ class ExpiryStatsTab:
         self.active_filters: dict[str, set] = {}
         self.filter_btns: dict[str, QPushButton] = {}
         self._on_data_change = None
+        self.load_from_cache = False  # 启动自动加载缓存标记
 
     def build(self) -> QWidget:
         frame = QWidget()
@@ -105,6 +107,17 @@ class ExpiryStatsTab:
             self.file_path_edit.setText(filepath)
             self._load_file()
 
+    def _progress_popup(self):
+        """获取当前应显示进度的弹窗。
+
+        缓存加载时返回 None：过保数据不参与启动弹窗的进度更新，
+        避免与主数据并发时进度互相覆盖（回退/往复）。进度条统一由主数据驱动。
+        人工导入时返回自建弹窗正常显示分步进度。
+        """
+        if self.load_from_cache:
+            return None
+        return getattr(self, "_popup", None)
+
     def _load_file(self):
         filepath = self.file_path_edit.text().strip()
         if not filepath:
@@ -118,8 +131,15 @@ class ExpiryStatsTab:
         self._load_error = None
         self._load_df = None
 
-        self._popup = ProgressPopup(self.frame, title="正在导入过保情况数据...")
-        self._popup.set_progress(0.0, "正在读取文件...")
+        if self.load_from_cache:
+            # 缓存加载：复用主窗口启动弹窗，不再新建弹窗
+            self._popup = None
+            splash = self._progress_popup()
+            if splash is not None:
+                splash.set_progress(0.0, "正在读取过保历史数据...")
+        else:
+            self._popup = ProgressPopup(self.frame, title="正在导入过保情况数据...")
+            self._popup.set_progress(0.0, "正在读取文件...")
 
         def worker():
             try:
@@ -136,15 +156,46 @@ class ExpiryStatsTab:
         thread.start()
         QTimer.singleShot(50, lambda: self._poll_file_read(thread))
 
+    def _load_from_cache_path(self, path: str):
+        """启动自动加载过保缓存（独立于人工导入，避免与 _load_file 的 _loading 冲突）。"""
+        if self.source_df is not None or getattr(self, "_loading", False):
+            return
+        self.file_path_edit.setText(path)
+        self.load_from_cache = True
+        self._load_file()
+
     def _poll_file_read(self, thread):
+        # 缓存加载被用户取消：停止轮询，保留已加载的数据（如有）
+        if self.load_from_cache:
+            top = self.frame.window() if self.frame else None
+            if top is not None and getattr(top, "_cache_load_cancelled", False):
+                self._loading = False
+                self.load_from_cache = False
+                if self.source_df is None and self._load_df is not None:
+                    self.source_df = self._load_df
+                return
         if thread.is_alive():
-            self._popup.set_progress(0.05, "正在读取 Excel 文件...")
+            popup = self._progress_popup()
+            if popup is not None:
+                # 读取阶段（实际 0.05）。缓存模式：显示 = 实际 × 2，封顶 0.95
+                show = 0.05 if not self.load_from_cache else min(0.05 * 2.0, 0.95)
+                popup.set_progress(show, "正在读取 Excel 文件...")
             QTimer.singleShot(50, lambda: self._poll_file_read(thread))
             return
 
         if self._load_error:
-            self._popup.close()
+            # 人工导入时关闭自建弹窗；缓存加载时自建弹窗为 None，启动弹窗由协调器统一处理
+            if not self.load_from_cache and self._popup is not None:
+                self._popup.close()
             self._loading = False
+            # 若本次加载的是缓存且失败，清除该无效缓存，避免下次反复读取
+            if self.load_from_cache:
+                self.load_from_cache = False
+                cache_manager.remove_expiry_cache()
+                # 通知主窗口协调器（避免启动弹窗悬挂）
+                top = self.frame.window() if self.frame else None
+                if top is not None and hasattr(top, "_on_cache_load_item_done"):
+                    top._on_cache_load_item_done()
             QTimer.singleShot(100, lambda: QMessageBox.critical(self.frame, "错误", self._load_error))
             return
 
@@ -153,14 +204,33 @@ class ExpiryStatsTab:
         self.sort_col = None
         self.sort_asc = True
 
-        self._popup.set_progress(0.10, "正在处理过保数据...")
+        popup = self._progress_popup()
+        if popup is not None:
+            show = 0.10 if not self.load_from_cache else min(0.10 * 2.0, 0.95)
+            popup.set_progress(show, "正在处理过保数据...")
         self._fill_table(self._load_df)
-        self._popup.set_progress(1.0, "加载完成！")
-        self._popup.close()
+        # 缓存模式：不在此处设 100%（避免与主数据并发回退），由 _finish_cache_load 统一关闭
+        if not self.load_from_cache:
+            if popup is not None:
+                popup.set_progress(1.0, "加载完成！")
+            if self._popup is not None:
+                self._popup.close()
         self._loading = False
+
+        # 人工导入成功：写入缓存目录（自动加载缓存时不重复写）
+        was_from_cache = self.load_from_cache
+        if not self.load_from_cache:
+            cache_manager.write_cache(self.file_path_edit.text(), "expiry")
+        self.load_from_cache = False
 
         self._build_filter_bar()
         log_info(f"过保情况表格渲染完成，共 {len(self._load_df)} 行")
+
+        # 若本次从缓存加载，通知主窗口的启动弹窗协调器
+        if was_from_cache and self.frame is not None:
+            top = self.frame.window()
+            if hasattr(top, "_on_cache_load_item_done"):
+                top._on_cache_load_item_done()
 
         if self._on_data_change:
             self._on_data_change()

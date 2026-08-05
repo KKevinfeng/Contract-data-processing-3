@@ -33,8 +33,9 @@ from ui.starred_view import StarredView
 from ui.starred_input_dialog import StarredInputDialog
 from ui.progress_popup import ProgressPopup
 from ui.industry_overrides import apply_overrides
-from ui.msg_box import info, warn, error
+from ui.msg_box import info, warn, error, show_about
 from ui.settings import AppSettings
+from ui import cache_manager
 from utils import classify_contract
 
 
@@ -360,7 +361,7 @@ class MaintenanceApp(QMainWindow):
         layout.addStretch()
 
         # 关于按钮
-        about_btn = QPushButton("关于 v3.0.0.1")
+        about_btn = QPushButton("关于 v3.0.1.0")
         about_btn.setObjectName("ghostBtn")
         about_btn.setFont(QFont("Microsoft YaHei UI", 11))
         about_btn.clicked.connect(self._show_about)
@@ -581,16 +582,14 @@ class MaintenanceApp(QMainWindow):
 
     def _show_about(self):
         """显示关于对话框。"""
-        info(
-            self, "关于",
-            "<h3 style='color:#2563EB;'>合同数据处理工具</h3>"
-            "<p>版本信息：3.0.0.1</p>"
-            "<p>制作人：Kevin</p>"
-            "<p>主页：<a href='https://kkevinfeng.github.io/'>"
-            "https://kkevinfeng.github.io/</a></p>"
-            "<p>源代码：<a href='https://github.com/KKevinfeng/Contract-data-processing-3.git'>"
-            "https://github.com/KKevinfeng/Contract-data-processing-3.git</a></p>"
-        )
+        # 用结构化数据 + QGridLayout 渲染，避免 Qt RichText 不支持现代 CSS 的问题
+        rows = [
+            ("版本信息：", "3.0.1.0"),
+            ("制作人：", "Kevin"),
+            ("主页：", "https://kkevinfeng.github.io/"),
+            ("源代码：", "https://github.com/KKevinfeng/Contract-data-processing-3.git"),
+        ]
+        show_about(self, "关于", "合同数据处理工具", rows)
 
     def _view_starred(self):
         def on_cache_changed():
@@ -647,7 +646,130 @@ class MaintenanceApp(QMainWindow):
 
     # ── 数据加载 ──
 
-    def _load_file(self, filepath: str):
+    def _init_cache_load_tracker(self, count: int):
+        """初始化缓存加载完成计数跟踪。"""
+        self._cache_load_pending = count
+        self._cache_load_done = 0
+
+    def _cache_display_progress(self, real: float) -> float:
+        """把"实际加载进度"映射为"显示进度"（实际 × 2，上限 100%）。
+
+        例如实际 16% → 显示 32%；实际 45% → 显示 90%；
+        实际 ≥50% → 显示 100%。这样进度条在真实加载完成（实际 50%+）
+        时恰好显示 100%，不会出现"加载完了进度却还在半路"的脱节。
+        """
+        return min(real * 2.0, 1.0)
+
+    def _on_cache_load_item_done(self):
+        """单个缓存数据源加载完成时回调。
+
+        数据源完成即"实际完成比例"已达相应份额，全部完成后关闭启动弹窗。
+        显示进度由数据源内部阶段 ×2 驱动（见 _cache_display_progress）。
+        """
+        if getattr(self, "_cache_load_cancelled", False):
+            return
+        self._cache_load_done = getattr(self, "_cache_load_done", 0) + 1
+        pending = getattr(self, "_cache_load_pending", 0)
+        if pending <= 0:
+            return
+        if self._cache_load_done >= pending:
+            self._finish_cache_load()
+
+    def _finish_cache_load(self):
+        """所有缓存加载完成：关闭启动弹窗、更新状态栏。
+
+        显示进度在真实加载过程中已按 ×2 驱动到 100%（见 _cache_display_progress），
+        因此这里直接关闭，不再模拟补全。
+        """
+        splash = getattr(self, "_startup_splash", None)
+        if splash is not None:
+            try:
+                splash.set_progress(1.0, "加载完成！")
+                splash.close()
+            except Exception:
+                pass
+            self._startup_splash = None
+        self.status_label.setText(
+            "已从缓存自动加载上次导入的数据（可点击「导入合同数据」重新导入）"
+        )
+        log_info("历史数据缓存加载完成")
+
+    def _cancel_cache_load(self):
+        """用户点击 × 关闭启动弹窗：取消后台缓存导入。
+
+        已加载完成的数据保留；尚未启动/正在进行的后续加载停止，
+        避免弹窗关闭后数据仍在后台导入。
+        """
+        self._cache_load_cancelled = True
+        splash = getattr(self, "_startup_splash", None)
+        if splash is not None:
+            try:
+                splash.close()
+            except Exception:
+                pass
+            self._startup_splash = None
+        self.status_label.setText("已取消自动加载历史数据（可点击「导入合同数据」手动导入）")
+        log_info("用户取消了缓存自动加载")
+
+    def load_main_from_cache(self):
+        """启动时自动加载缓存中的主合同文件（若存在且有效）。"""
+        if self.df is not None:
+            return False
+        snap = cache_manager.scan_cache()
+        cache_manager.clean_junk_files(snap)
+        if snap.main.valid:
+            log_info(f"检测到主数据缓存: {snap.main.path}")
+            self._load_file(snap.main.path, from_cache=True)
+            return True
+        return False
+
+    def load_expiry_from_cache(self):
+        """启动时自动加载缓存中的过保文件（若存在且有效）。"""
+        if self.tab_expiry_stats.source_df is not None:
+            return False
+        snap = cache_manager.scan_cache()
+        if snap.expiry.valid:
+            log_info(f"检测到过保数据缓存: {snap.expiry.path}")
+            self.tab_expiry_stats._load_from_cache_path(snap.expiry.path)
+            return True
+        return False
+
+    def try_load_all_caches(self):
+        """启动时按顺序加载主数据与过保数据缓存。
+
+        每个数据源异步加载，加载完成各自回调 _on_cache_load_item_done，
+        全部完成后进度平滑补全到 100% 并关闭启动弹窗。
+        """
+        self._cache_load_cancelled = False
+        loaded_main = self.load_main_from_cache()
+        # 主数据加载期间用户可能已取消，则不再启动过保数据
+        if self._cache_load_cancelled:
+            loaded_expiry = False
+        else:
+            loaded_expiry = self.load_expiry_from_cache()
+        pending = (1 if loaded_main else 0) + (1 if loaded_expiry else 0)
+        if pending == 0:
+            self._finish_cache_load()
+            return False
+        self._init_cache_load_tracker(pending)
+        # 进度条由数据源内部真实阶段 ×2 驱动，无需定时器模拟
+        return True
+
+    def _progress_popup(self):
+        """获取当前应显示进度的弹窗。
+
+        - 缓存自动加载时：返回主窗口的启动弹窗（_startup_splash）。
+          进度值由数据源内部真实阶段上报，并经 _cache_display_progress（×2）映射后显示。
+        - 人工导入时：返回内部自建的 ProgressPopup 正常显示分步进度。
+        """
+        if self._load_from_cache:
+            splash = getattr(self, "_startup_splash", None)
+            if splash is not None:
+                return splash
+            return None
+        return getattr(self, "_popup", None)
+
+    def _load_file(self, filepath: str, from_cache: bool = False):
         if getattr(self, "_loading", False):
             return
         self._loading = True
@@ -656,9 +778,17 @@ class MaintenanceApp(QMainWindow):
         self._load_df: pd.DataFrame | None = None
         self._load_step: int = 0
         self._load_filepath: str = filepath
+        self._load_from_cache: bool = from_cache
 
-        self._popup = ProgressPopup(self, title="正在导入合同数据...")
-        self._popup.set_progress(0.0, "正在读取文件...")
+        if from_cache:
+            # 缓存加载：复用主窗口启动弹窗，不再新建弹窗
+            self._popup = None
+            splash = getattr(self, "_startup_splash", None)
+            if splash is not None:
+                splash.set_progress(0.0, "正在读取历史数据文件...")
+        else:
+            self._popup = ProgressPopup(self, title="正在导入合同数据...")
+            self._popup.set_progress(0.0, "正在读取文件...")
 
         def worker():
             try:
@@ -695,24 +825,64 @@ class MaintenanceApp(QMainWindow):
         QTimer.singleShot(50, lambda: self._poll_file_read(thread))
 
     def _poll_file_read(self, thread: threading.Thread):
+        # 缓存加载被用户取消：停止轮询，保留已加载的数据（如有）
+        if self._load_from_cache and getattr(self, "_cache_load_cancelled", False):
+            self._loading = False
+            if self.df is None and self._load_df is not None:
+                self.df = self._load_df
+            return
         if thread.is_alive():
-            self._popup.set_progress(0.05, "正在读取 Excel 文件...")
+            popup = self._progress_popup()
+            if popup is not None:
+                # 读取阶段：随轮询次数在 0~20% 间平滑推进，让用户看到读取进度在实时变化。
+                # 缓存模式：显示 = 实际 × 2（封顶 95%），见 _cache_display_progress
+                self._read_poll_count = getattr(self, "_read_poll_count", 0) + 1
+                read_progress = min(0.02 + self._read_poll_count * 0.01, 0.20)
+                if self._load_from_cache:
+                    read_progress = min(read_progress * 2.0, 0.95)
+                    # 缓存模式：文字固定为"正在读取历史数据..."
+                    popup.set_progress(read_progress, "正在读取历史数据...")
+                else:
+                    popup.set_progress(read_progress, "正在读取 Excel 文件...")
             QTimer.singleShot(50, lambda: self._poll_file_read(thread))
             return
 
         if self._load_error:
-            self._popup.close()
+            # 人工导入时关闭自建弹窗；缓存加载时自建弹窗为 None，无需关闭
+            if not self._load_from_cache and self._popup is not None:
+                self._popup.close()
             self._loading = False
+            # 若本次加载的是缓存且失败，清除无效缓存，避免下次反复读取
+            if self._load_from_cache:
+                self._load_from_cache = False
+                cache_manager.remove_main_cache()
+                self._on_cache_load_item_done()
             QTimer.singleShot(100, lambda: error(self, "错误", self._load_error))
             self.status_label.setText("就绪 — 请选择 Excel 文件")
             return
 
         self.df = self._load_df
         self._load_step = 0
-        self._popup.set_progress(0.10, "文件读取完成，开始统计...")
+        self._read_poll_count = 0
+        popup = self._progress_popup()
+        if popup is not None:
+            read_done = 0.20 if not self._load_from_cache else min(0.20 * 2.0, 0.95)
+            text = "文件读取完成，开始统计..." if not self._load_from_cache else "正在读取历史数据..."
+            popup.set_progress(read_done, text)
+
+        # 人工导入成功：写入缓存目录（下次启动自动加载）。
+        # 缓存自动加载时不重复写缓存（避免复制自身造成冗余）。
+        if not self._load_from_cache:
+            cache_manager.write_cache(self._load_filepath, "main")
+
         QTimer.singleShot(20, self._compute_next_tab)
 
     def _compute_next_tab(self):
+        # 缓存加载被用户取消：停止统计（已统计的 Tab 保留）
+        if self._load_from_cache and getattr(self, "_cache_load_cancelled", False):
+            self._loading = False
+            return
+
         tabs = self._shared_tabs
         total = len(tabs)
         i = self._load_step
@@ -723,8 +893,18 @@ class MaintenanceApp(QMainWindow):
 
         tab = tabs[i]
         title = self.TAB_TITLES[i][0] if i < len(self.TAB_TITLES) else "..."
-        progress = 0.10 + 0.85 * ((i + 1) / total)
-        self._popup.set_progress(progress, f"正在统计: {title} ({i+1}/{total})...")
+        # 统计阶段：20% ~ 95%，每个 Tab 精确推进。
+        # 缓存模式：显示 = 实际 × 2（封顶 95%），真实完成时才由 _finish_cache_load 设 100%
+        progress = 0.20 + 0.75 * ((i + 1) / total)
+        if self._load_from_cache:
+            progress = min(progress * 2.0, 0.95)
+            # 缓存模式：文字固定为"正在读取历史数据..."
+            text = "正在读取历史数据..."
+        else:
+            text = f"正在统计: {title} ({i+1}/{total})..."
+        popup = self._progress_popup()
+        if popup is not None:
+            popup.set_progress(progress, text)
 
         try:
             computed = tab.compute_data(self.df)
@@ -744,12 +924,22 @@ class MaintenanceApp(QMainWindow):
         except Exception as e:
             log_error(f"过保数据分析刷新失败: {e}")
 
-        self._popup.set_progress(1.0, "加载完成！")
-        self._popup.close()
+        popup = self._progress_popup()
+        # 缓存模式：不在此处设 100%，避免与过保并发时进度回退（往复），
+        # 由 _finish_cache_load 在真实全部完成时统一设 100% 并关闭。
+        if popup is not None and not self._load_from_cache:
+            popup.set_progress(1.0, "加载完成！")
+        # 人工导入：关闭自建弹窗；缓存加载：自建弹窗为 None，启动弹窗由协调器统一关闭
+        if not self._load_from_cache and self._popup is not None:
+            self._popup.close()
         self.status_label.setText(f"已加载 {len(self.df)} 行数据 — {self._load_filepath}")
 
         # 更新 metric 卡片
         self._refresh_metric()
+
+        # 若本次是从缓存加载，通知启动弹窗协调器
+        if self._load_from_cache:
+            self._on_cache_load_item_done()
 
         QTimer.singleShot(100, self._check_starred_collision)
 

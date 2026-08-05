@@ -8,6 +8,7 @@ dist/
 .idea/
 .vscode/
 logs/
+tmp/
 merge_rules.json
 industry_dict.json
 industry_overrides.json
