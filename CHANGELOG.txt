@@ -38,6 +38,18 @@ Tab6 行业统计下钻
 删除 tab_customer_type.py（客户类型辅助模块）
 - 原客户类型统计能力并入客户分类/客户画像 Tab
 
+2026年8月5日 更新日志 — v3.0.0.1
+
+【优化功能】
+
+应用专属图标与关于弹窗
+- 新增专属 logo：assets/ 保存 PNG 源图，根目录 logo.ico（多尺寸 16~256）
+- main.py 启动时设置窗口图标（setWindowIcon），源码运行与打包 exe 均可加载
+- build.ps1 打包时内置 logo.ico 并设置 exe 文件图标（--windows-icon-from-ico）
+- 关于弹窗补充「主页」一行，链接指向个人主页 https://kkevinfeng.github.io/
+
+---
+
 【文档更新】
 
 - README.md、RELEASE.md、build.ps1 同步更新至 PySide6 架构

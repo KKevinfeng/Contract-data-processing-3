@@ -360,7 +360,7 @@ class MaintenanceApp(QMainWindow):
         layout.addStretch()
 
         # 关于按钮
-        about_btn = QPushButton("关于 v3.0.0.0")
+        about_btn = QPushButton("关于 v3.0.0.1")
         about_btn.setObjectName("ghostBtn")
         about_btn.setFont(QFont("Microsoft YaHei UI", 11))
         about_btn.clicked.connect(self._show_about)
@@ -584,8 +584,10 @@ class MaintenanceApp(QMainWindow):
         info(
             self, "关于",
             "<h3 style='color:#2563EB;'>合同数据处理工具</h3>"
-            "<p>版本信息：3.0.0.0</p>"
+            "<p>版本信息：3.0.0.1</p>"
             "<p>制作人：Kevin</p>"
+            "<p>主页：<a href='https://kkevinfeng.github.io/'>"
+            "https://kkevinfeng.github.io/</a></p>"
             "<p>源代码：<a href='https://github.com/KKevinfeng/Contract-data-processing-3.git'>"
             "https://github.com/KKevinfeng/Contract-data-processing-3.git</a></p>"
         )

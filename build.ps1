@@ -40,6 +40,7 @@ $sourceItems = @(
     "requirements.txt",
     "CHANGELOG.txt",
     "README.md",
+    "logo.ico",
     "ui"
 )
 
@@ -64,6 +65,8 @@ try {
         --enable-plugin=pyside6 `
         --include-data-files="CHANGELOG.txt=CHANGELOG.txt" `
         --include-data-files="README.md=README.md" `
+        --include-data-files="logo.ico=logo.ico" `
+        --windows-icon-from-ico=logo.ico `
         --remove-output `
         --output-dir=dist `
         main.py

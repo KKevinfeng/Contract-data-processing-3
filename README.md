@@ -13,6 +13,7 @@ Contract-data-processing-3/
 ├── requirements.txt                # Python 依赖清单
 ├── build.ps1                       # Nuitka 打包脚本（自动检测 Python 环境、版本号命名输出）
 ├── CHANGELOG.txt                   # 版本更新日志
+├── logo.ico                        # 应用图标（打包后 exe 图标 + 窗口左上角图标）
 │
 ├── merge_rules.json                # 产品合并规则持久化文件（运行时生成）
 ├── industry_dict.json              # 行业数据字典（一级/二级行业映射，运行时生成）
@@ -87,7 +88,7 @@ python main.py
 .\build.ps1
 
 # 方式二：手动执行
-python -m nuitka --standalone --windows-console-mode=disable --enable-plugin=pyside6 --include-data-files="CHANGELOG.txt=CHANGELOG.txt" --include-data-files="README.md=README.md" --remove-output --output-dir=dist main.py
+python -m nuitka --standalone --windows-console-mode=disable --enable-plugin=pyside6 --include-data-files="CHANGELOG.txt=CHANGELOG.txt" --include-data-files="README.md=README.md" --include-data-files="logo.ico=logo.ico" --windows-icon-from-ico=logo.ico --remove-output --output-dir=dist main.py
 ```
 
 > **打包说明**：
