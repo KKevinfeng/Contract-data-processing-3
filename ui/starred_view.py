@@ -101,7 +101,7 @@ class StarredView:
             for col_idx, val in enumerate([str(row["序号"]), str(row["最终客户名称"]), "删除"]):
                 item = QStandardItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 self.model.setItem(idx, col_idx, item)
 
     def _on_close(self):

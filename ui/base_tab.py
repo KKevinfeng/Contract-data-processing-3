@@ -268,7 +268,7 @@ class QtBaseTab:
 
             seq_item = QStandardItem(str(row_idx + 1))
             seq_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            seq_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            seq_item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
             model.setItem(row_idx, col_offset, seq_item)
             col_offset += 1
 
@@ -277,7 +277,7 @@ class QtBaseTab:
                 text = self._format_cell(val)
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 if isinstance(val, (int, float)) and not pd.isna(val):
                     item.setData(float(val), Qt.ItemDataRole.UserRole)
                 model.setItem(row_idx, col_offset + col_idx, item)

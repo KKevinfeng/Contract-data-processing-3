@@ -61,7 +61,7 @@ class CustomerDetailWindow:
                     text = str(val).replace("\n", " | ")
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 model.setItem(row_idx, col_idx, item)
 
         table = QTableView()

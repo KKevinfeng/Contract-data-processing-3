@@ -213,13 +213,11 @@ class IndustryTab(QtBaseTab):
             QMessageBox.warning(self.frame, "提示", "请先选择一项")
             return
         name = sel.text()
-        reply = QMessageBox.question(
-            self.frame, "确认删除", f"确定要删除「{name}」吗？",
-        )
-        if reply:
-            remove_fn(name)
-            refresh()
-            self._refresh_tab_after_override()
+        if not confirm(self.frame, "确认删除", f"确定要删除「{name}」吗？"):
+            return
+        remove_fn(name)
+        refresh()
+        self._refresh_tab_after_override()
 
     # ── 覆盖规则管理 ──
 
@@ -279,7 +277,7 @@ class IndustryTab(QtBaseTab):
                 ]
                 for item in items:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setFlags(Qt.ItemFlag(item.flags() & ~Qt.ItemFlag.ItemIsEditable))
                 model.appendRow(items)
 
         fill()
@@ -468,7 +466,7 @@ class IndustryTab(QtBaseTab):
             for ci, val in enumerate([str(idx + 1), str(row["二级行业"]), str(int(row["数量"]))]):
                 item = QStandardItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 model.setItem(idx, ci, item)
 
         table.setModel(model)
@@ -525,7 +523,7 @@ class IndustryTab(QtBaseTab):
             for ci, val in enumerate([str(idx + 1), str(row["最终客户名称"])]):
                 item = QStandardItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 model.setItem(idx, ci, item)
 
         table.setModel(model)

@@ -315,7 +315,7 @@ class ExpiryStatsTab:
             # 序号
             item = QStandardItem(str(row_idx + 1))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
             model.setItem(row_idx, 0, item)
 
             for col_idx, col in enumerate(reordered):
@@ -323,7 +323,7 @@ class ExpiryStatsTab:
                 text = self._fmt_val(val)
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 model.setItem(row_idx, col_idx + 1, item)
 
         self.table.setModel(model)
@@ -362,7 +362,7 @@ class ExpiryStatsTab:
         for col in filter_cols:
             clean = self._clean_col(col)
             # 初始状态下从原始数据计算全部可选值
-            all_vals = sorted(self.source_df[col].dropna().astype(str).unique().tolist())
+            all_vals = sorted(self.source_df[col].fillna("（空）").astype(str).unique().tolist())
             btn = QPushButton(f"▽ {clean}")
             btn.setObjectName("filterBtn")
             btn.setCheckable(True)
@@ -384,7 +384,7 @@ class ExpiryStatsTab:
                 continue
             clean = self._clean_col(col)
             selected = self.active_filters.get(col)
-            if selected is not None and selected != set(self.source_df[col].dropna().astype(str).unique()):
+            if selected is not None and selected != set(self.source_df[col].fillna("（空）").astype(str).unique()):
                 btn.setText(f"▼ {clean}({len(selected)})")
                 btn.setChecked(True)
             else:
@@ -425,9 +425,9 @@ class ExpiryStatsTab:
         if saved is not None:
             self.active_filters[col] = saved
         if filtered is None or col not in filtered.columns:
-            vals = sorted(self.source_df[col].dropna().astype(str).unique().tolist())
+            vals = sorted(self.source_df[col].fillna("（空）").astype(str).unique().tolist())
         else:
-            vals = sorted(filtered[col].dropna().astype(str).unique().tolist())
+            vals = sorted(filtered[col].fillna("（空）").astype(str).unique().tolist())
 
         selected = self.active_filters.get(col, set(vals))
         ColumnFilterPopup(self.frame, self._clean_col(col), vals, selected,

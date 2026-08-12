@@ -142,7 +142,7 @@ class CustomerProfileTab(QtBaseTab):
             for ci, val in enumerate([str(pi + 1), pname, f"{pqty:,}"]):
                 item = QStandardItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 model.setItem(pi, ci, item)
 
         table = QTableView()

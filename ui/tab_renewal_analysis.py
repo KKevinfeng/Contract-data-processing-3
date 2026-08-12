@@ -62,6 +62,7 @@ class RenewalAnalysisTab:
         self.filter_year: set | None = None
         self.active_filters: dict = {}
         self._renewal_details: list[tuple[str, str, str]] = []
+        self._renewal_index: dict[str, list[tuple[str, str, str]]] = {}
         self._gift_channels: set[str] = set()
 
     def build(self) -> QWidget:
@@ -104,15 +105,23 @@ class RenewalAnalysisTab:
         self._reason_btn.setCheckable(True)
         self.filter_layout.addWidget(self._reason_btn)
 
+        self._sales_btn = QPushButton("▽ 负责销售")
+        self._sales_btn.clicked.connect(lambda: self._open_column_filter("负责销售"))
+        self._btn_gray(self._sales_btn)
+        self._sales_btn.setCheckable(True)
+        self.filter_layout.addWidget(self._sales_btn)
+
         # 列名 -> 筛选按钮的映射（弹窗关闭后用于复位）
         self.filter_buttons = {
             "*客户意向": self._intent_btn,
             "不续保原因": self._reason_btn,
+            "负责销售": self._sales_btn,
         }
 
         self._clear_filter_btn = QPushButton("清除筛选")
         self._clear_filter_btn.setObjectName("dangerBtn")
         self._clear_filter_btn.clicked.connect(self._clear_filters)
+        self._clear_filter_btn.setVisible(False)  # 初始无激活筛选，不显示
         self.filter_layout.addWidget(self._clear_filter_btn)
         self.filter_layout.addStretch()
         layout.addLayout(self.filter_layout)
@@ -175,8 +184,15 @@ class RenewalAnalysisTab:
         visible = (not self._hide_filter_bar) and has_data
         for i in range(self.filter_layout.count()):
             item = self.filter_layout.itemAt(i)
-            if item.widget():
-                item.widget().setVisible(visible)
+            w = item.widget()
+            if not w:
+                continue
+            if w is self._clear_filter_btn:
+                # 清除按钮只在该列有激活筛选时显示（无数据时强制隐藏），
+                # 不受整栏 visible 的"有数据即显示"逻辑影响。
+                w.setVisible(visible and self._has_active_filters())
+            else:
+                w.setVisible(visible)
 
     # ── 数据加载 ──
 
@@ -451,7 +467,7 @@ class RenewalAnalysisTab:
             for ci, val in enumerate(values):
                 item = QStandardItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 # 颜色标记（用 setData(role) 而不是 setBackground 以避免 QSS 屏蔽）
                 if is_gift and is_renewed:
                     item.setData(QColor("#66BB6A"), Qt.ItemDataRole.BackgroundRole)
@@ -610,7 +626,7 @@ class RenewalAnalysisTab:
         if self.source_df is None or col not in self.source_df.columns:
             return []
         df = self._apply_filters(self.source_df, skip_column=skip_col)
-        vals = df[col].dropna().astype(str).unique().tolist()
+        vals = df[col].fillna("（空）").astype(str).unique().tolist()
         return sorted(set(vals))
 
     def _clear_filters(self):
@@ -734,6 +750,7 @@ class RenewalAnalysisTab:
 
     def _load_renewal_details(self):
         self._renewal_details.clear()
+        self._renewal_index.clear()
         try:
             if os.path.exists(RENEWAL_FILE):
                 df = _safe_read_excel(RENEWAL_FILE)
@@ -743,6 +760,7 @@ class RenewalAnalysisTab:
                     cust = str(row.get("客户名称", "")).strip() if "客户名称" in df.columns else ""
                     if old and new:
                         self._renewal_details.append((old, new, cust))
+                        self._renewal_index.setdefault(old, []).append((old, new, cust))
         except Exception as e:
             log_error(f"加载续保明细失败: {e}")
 
@@ -767,9 +785,12 @@ class RenewalAnalysisTab:
         from datetime import datetime
         current_year = datetime.now().year
         latest_renewal_year = None
-        for old, new, cust in self._renewal_details:
-            if old != contract:
-                continue
+        # 用合同号索引 O(1) 定位，避免每次全表线性扫描（旧实现 O(N*M)，
+        # 在 _fill_table 中每行调用、筛选时多次全表遍历，数据量大时可能卡死主线程）
+        entries = self._renewal_index.get(contract)
+        if not entries:
+            return False
+        for old, new, cust in entries:
             renewal_year = extract_contract_year(new)
             if renewal_year is None:
                 continue
@@ -821,7 +842,7 @@ class RenewalAnalysisTab:
                 for ci, val in enumerate([str(i + 1), new, old, cust]):
                     item = QStandardItem(val)
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                     model.setItem(i, ci, item)
 
         refresh_table()
@@ -925,10 +946,10 @@ class RenewalAnalysisTab:
             if not idx.isValid():
                 return
             row = idx.row()
-            reply = QMessageBox.question(dialog, "确认删除", f"确定要删除？")
-            if reply:
-                details.pop(row)
-                refresh_table()
+            if not confirm(dialog, "确认删除", "确定要删除？"):
+                return
+            details.pop(row)
+            refresh_table()
         del_btn.clicked.connect(delete_fn)
         btn_bar.addWidget(del_btn)
 
@@ -936,6 +957,10 @@ class RenewalAnalysisTab:
 
         def save_and_close():
             self._renewal_details = list(details)
+            # 明细变化后同步重建合同号索引，保证 _is_contract_renewed 读到最新数据
+            self._renewal_index.clear()
+            for old, new, cust in self._renewal_details:
+                self._renewal_index.setdefault(old, []).append((old, new, cust))
             self._save_renewal_details()
             self._fill_table()
             # 不要调用 dialog.accept()——finished 信号已经是关闭触发的，
@@ -999,7 +1024,7 @@ class RenewalAnalysisTab:
                 for ci, val in enumerate([str(i + 1), name]):
                     item = QStandardItem(val)
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                     model.setItem(i, ci, item)
 
         refresh_table()
@@ -1107,10 +1132,10 @@ class RenewalAnalysisTab:
             return
         row = idx.row()
         name = channels[row]
-        reply = QMessageBox.question(table, "确认删除", f"确定要删除渠道？\n\n{name}")
-        if reply:
-            channels.pop(row)
-            refresh_fn()
+        if not confirm(table, "确认删除", f"确定要删除渠道？\n\n{name}"):
+            return
+        channels.pop(row)
+        refresh_fn()
 
     def _export_csv(self):
         df = self.source_df

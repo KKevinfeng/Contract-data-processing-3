@@ -247,10 +247,7 @@ class ProductMergeDialog:
         msg = f"确定要删除合并规则「{display_name}」吗？"
         if msg_names:
             msg += f"\n\n该规则包含以下产品：\n{msg_names}"
-        reply = QMessageBox.question(
-            self.dialog, "确认删除规则", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
+        reply = confirm(self.dialog, "确认删除规则", msg)
         if reply:
             del self.merge_rules[display_name]
             log_info(f"产品合并规则删除: {display_name}")
@@ -259,10 +256,7 @@ class ProductMergeDialog:
     def _clear_all(self):
         if not self.merge_rules:
             return
-        reply = QMessageBox.question(
-            self.dialog, "确认", "确定要清空所有合并规则吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
+        reply = confirm(self.dialog, "确认", "确定要清空所有合并规则吗？")
         if reply:
             self.merge_rules.clear()
             log_info("产品合并规则全部清空")

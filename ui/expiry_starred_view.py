@@ -100,7 +100,7 @@ class ExpiryStarredView:
         for row_idx, (_, row) in enumerate(df.iterrows()):
             item = QStandardItem(str(row_idx + 1))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
             model.setItem(row_idx, 0, item)
 
             for col_idx, col in enumerate(reordered):
@@ -108,7 +108,7 @@ class ExpiryStarredView:
                 text = self._fmt_val(val)
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
                 model.setItem(row_idx, col_idx + 1, item)
 
         self.table.setModel(model)

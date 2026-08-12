@@ -584,7 +584,7 @@ class MaintenanceApp(QMainWindow):
         """显示关于对话框。"""
         # 用结构化数据 + QGridLayout 渲染，避免 Qt RichText 不支持现代 CSS 的问题
         rows = [
-            ("版本信息：", "3.0.1.0"),
+            ("版本信息：", "3.0.2.0"),
             ("制作人：", "Kevin"),
             ("主页：", "https://kkevinfeng.github.io/"),
             ("源代码：", "https://github.com/KKevinfeng/Contract-data-processing-3.git"),

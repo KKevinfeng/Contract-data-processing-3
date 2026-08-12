@@ -115,4 +115,8 @@ class ColumnFilterPopup:
         self.selected = {v for v, cb in self.cb_widgets.items() if cb.isChecked()}
         self.dialog.accept()
         if self.on_apply:
-            self.on_apply(self.col_name, self.selected)
+            # 延迟到 exec() 退出、事件循环稳定后再执行回调，
+            # 避免在弹窗嵌套事件循环收尾时同步刷新主表格（如 setModel）
+            # 引发 Qt C++ 层重入崩溃（表现为无日志的"未响应后直接关闭"）。
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.on_apply(self.col_name, self.selected))
