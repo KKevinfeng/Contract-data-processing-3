@@ -76,10 +76,17 @@ try {
     }
 
     # 提取版本号（从 main_window.py 中读取）
+    # 注意：PowerShell 5 默认按 ANSI/GBK 读取 UTF-8 文件，"版本信息"等中文会乱码；
+    # 同时版本行格式为 ("版本信息：", "3.0.2.0")，"：" 与数字之间隔了引号逗号。
+    # 因此这里用码点构造中文 pattern（避免本脚本被 GBK 读取时中文乱码），
+    # 并显式按 UTF-8 读取文件内容后匹配，正则允许"："后跳过非数字再捕获版本号。
     $versionFile = Join-Path (Join-Path $buildDir "ui") "main_window.py"
-    $versionMatch = Select-String -Path $versionFile -Pattern '版本信息：([\d.]+)' | Select-Object -First 1
-    if ($versionMatch) {
-        $version = $versionMatch.Matches.Groups[1].Value
+    $pat = ([string][char]0x7248 + [string][char]0x672C + [string][char]0x4FE1 +
+            [string][char]0x606F + [string][char]0xFF1A + '[^0-9]*([0-9.]+)')
+    $fileContent = [System.IO.File]::ReadAllText($versionFile, [System.Text.Encoding]::UTF8)
+    $m = [regex]::Match($fileContent, $pat)
+    if ($m.Success) {
+        $version = $m.Groups[1].Value
         $versionDir = "v$version"
     } else {
         $versionDir = "main.dist"
