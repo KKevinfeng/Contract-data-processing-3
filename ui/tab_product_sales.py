@@ -51,14 +51,10 @@ class ProductSalesTab(QtBaseTab):
     def build(self):
         frame = super().build()
 
-        # 自定义列宽：# 60px / 产品名称 stretch / 售卖总台数 120px（窗口放大时产品名称自动填充）
-        header = self.table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 60)
-        self.table.setColumnWidth(2, 120)
+        # 注意：列宽/resize 模式不能在 build() 里设置，
+        # 因为此时表格尚未绑定模型（0 列），setSectionResizeMode/setColumnWidth 会越界，
+        # 导致 PySide6 在 C++ 层访问冲突崩溃（0xc0000005 / 0xc000001d）。
+        # 列宽统一在 _rebuild_model() 中设置（此时模型已就位，列数正确）。
 
         merge_btn = QPushButton("产品名称合并")
         merge_btn.setObjectName("ghostBtn")

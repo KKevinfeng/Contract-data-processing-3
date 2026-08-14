@@ -144,12 +144,26 @@ def install_exception_hook() -> None:
 
 def install_qt_hook() -> None:
     """安装 Qt 消息处理器，将 Qt 运行时警告输出到日志。"""
-    def _qt_handler(msg_type, context):
-        msg = f"Qt {msg_type.name}: {context}"
-        APP_LOGGER.warning(msg)
+    def _qt_handler(*args):
+        # PySide6 不同版本的回调参数个数不同：
+        # 6.8.x 为 3 参 (msg_type, context, msg)，部分版本为 2 参 (msg_type, context)。
+        # 用 *args 兼容两种签名，避免回调时 TypeError 崩溃。
+        try:
+            if len(args) >= 3:
+                msg_type, context, msg = args[0], args[1], args[2]
+                detail = msg
+            elif len(args) == 2:
+                msg_type, context = args
+                detail = str(context)
+            else:
+                msg_type = args[0]
+                detail = ""
+            APP_LOGGER.warning(f"Qt {msg_type.name}: {detail}")
+        except Exception:
+            pass  # 日志处理失败不能影响主程序
 
     try:
-        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+        from PySide6.QtCore import qInstallMessageHandler
         qInstallMessageHandler(_qt_handler)
     except ImportError:
         pass

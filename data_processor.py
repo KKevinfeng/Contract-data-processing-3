@@ -115,10 +115,10 @@ def compute_product_sales(df: pd.DataFrame, merge_rules=None) -> pd.DataFrame:
     # 仅统计产品类合同
     df_p = df[df["合同类型"] == "P"]
 
-    # 解析产品行并汇总
+    # 解析产品行并汇总（性能优化：itertuples 替代 iterrows，快 5~10 倍）
     product_totals: dict[str, int] = {}
-    for _, row in df_p.iterrows():
-        products = parse_product_lines(row["产品名称型号"])
+    for row in df_p.itertuples(index=False):
+        products = parse_product_lines(row[2])  # 第3列 = 产品名称型号
         for p in products:
             name = p["name"]
             product_totals[name] = product_totals.get(name, 0) + p["qty"]
@@ -261,17 +261,18 @@ def get_product_p_contracts(df: pd.DataFrame, product_name: str, merge_rules=Non
         if product_name in merge_rules:
             target_names = merge_rules[product_name]
 
-    # 筛选包含目标产品的合同行
+    # 筛选包含目标产品的合同行（性能优化：itertuples 替代 iterrows）
+    # df_p 列序：0=合同编号*, 1=最终客户名称, 2=产品名称型号, 3=合同金额
     matched_rows = []
-    for _, row in df_p.iterrows():
-        products = parse_product_lines(row["产品名称型号"])
+    for row in df_p.itertuples(index=False):
+        products = parse_product_lines(row[2])
         row_names = {p["name"] for p in products}
         if row_names & target_names:
             matched_rows.append({
-                "合同编号*": row["合同编号*"],
-                "最终客户名称": row["最终客户名称"],
-                "产品名称型号": row["产品名称型号"],
-                "合同金额（元）*": row["合同金额（元）*"],
+                "合同编号*": row[0],
+                "最终客户名称": row[1],
+                "产品名称型号": row[2],
+                "合同金额（元）*": row[3],
             })
 
     if not matched_rows:

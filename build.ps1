@@ -14,11 +14,11 @@ chcp 65001 > $null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 优先使用项目 venv 中的 Python（已安装 PySide6 + Nuitka）
-$venvPython = "$projectDir\venv\Scripts\python.exe"
+# 优先使用项目 venv311 中的 Python（Python 3.11.9，Nuitka 稳定支持，已装依赖）
+$venvPython = "$projectDir\venv311\Scripts\python.exe"
 if (Test-Path $venvPython) {
     $python = $venvPython
-    Write-Host "使用 venv Python: $python" -ForegroundColor Green
+    Write-Host "使用 venv311 Python: $python" -ForegroundColor Green
 } else {
     # 兜底：使用 workbuddy 或系统 Python
     $python = "$env:USERPROFILE\.workbuddy\binaries\python\versions\3.14.3\python.exe"
@@ -63,6 +63,7 @@ try {
         --standalone `
         --windows-console-mode=disable `
         --enable-plugin=pyside6 `
+        --assume-yes-for-downloads `
         --include-data-files="CHANGELOG.txt=CHANGELOG.txt" `
         --include-data-files="README.md=README.md" `
         --include-data-files="logo.ico=logo.ico" `
@@ -93,11 +94,11 @@ try {
         Write-Warning "无法提取版本号，使用默认目录名"
     }
 
-    # 把生成的 dist 目录复制回项目根目录
+    # standalone 模式下，Nuitka 在 dist 下生成 main.dist 目录（含 exe + DLL + 依赖）
     $srcDist = Join-Path $buildDir "dist"
     $dstDist = Join-Path $projectDir "dist"
 
-    # 直接复制 main.dist 并重命名为版本号目录
+    # 复制 main.dist 并重命名为版本号目录
     $srcMainDist = Join-Path $srcDist "main.dist"
     $newDir = Join-Path $dstDist $versionDir
     if (Test-Path $newDir) {

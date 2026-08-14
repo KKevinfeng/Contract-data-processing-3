@@ -11,6 +11,14 @@ from PySide6.QtWidgets import QApplication
 # 屏蔽 openpyxl 默认样式警告
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
+# 性能优化：缩小 GIL 切换间隔，让后台线程（读取大 Excel / 统计）更频繁让出 GIL，
+# 保证主线程 Qt 事件循环在导入期间保持响应，避免 UI 冻结卡顿。
+# 默认 5ms 改小到 1ms，代价是极小 CPU 开销，换取 UI 流畅。
+try:
+    sys.setswitchinterval(0.001)
+except Exception:
+    pass
+
 # ── 尽早初始化日志 ──
 from ui.logger import log_info, log_error, install_exception_hook, APP_LOGGER
 

@@ -17,3 +17,7 @@ gift_channels.xlsx
 renewal_details.xlsx
 RELEASE.md
 venv/
+venv311/
+# 用户手册及生成脚本（内部文档/工具，不提交源码）
+_gen_docx.py
+用户手册*.docx

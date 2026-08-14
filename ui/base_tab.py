@@ -256,10 +256,13 @@ class QtBaseTab:
         model = QStandardItemModel(len(df), len(display_cols))
         model.setHorizontalHeaderLabels(display_cols)
 
-        for row_idx, (_, row) in enumerate(df.iterrows()):
+        # 性能优化：用 itertuples 替代 iterrows（快 5~10 倍，避免逐行构造 Series）
+        # itertuples 中 row[0]=index，row[1:] 对应 df 各列
+        n_cols = len(df_cols)
+        for row_idx, row in enumerate(df.itertuples(index=False)):
             col_offset = 0
             if self.has_star:
-                name_val = str(row[df_cols[0]]) if df_cols else ""
+                name_val = str(row[0]) if n_cols else ""
                 star = "★" if name_val in starred else "☆"
                 item = QStandardItem(star)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -272,8 +275,8 @@ class QtBaseTab:
             model.setItem(row_idx, col_offset, seq_item)
             col_offset += 1
 
-            for col_idx, col in enumerate(df_cols):
-                val = row[col]
+            for col_idx in range(n_cols):
+                val = row[col_idx]
                 text = self._format_cell(val)
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

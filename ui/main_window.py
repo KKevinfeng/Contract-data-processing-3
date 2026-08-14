@@ -203,6 +203,9 @@ class Sidebar(QFrame):
 class MaintenanceApp(QMainWindow):
     """合同数据处理工具 — 现代化 Sidebar 布局版本"""
 
+    # 后台线程 -> 主线程 信号：统计完成时通知主线程填充表格（线程安全的跨线程通信）
+    _tab_computed = Signal(object, str)
+
     REQUIRED_COL_KEYWORDS = [
         "合同编号*", "产品名称型号", "最终客户名称",
         "合同金额（元）*", "一级行业", "二级行业",
@@ -237,6 +240,9 @@ class MaintenanceApp(QMainWindow):
         )
 
         self._setup_ui()
+
+        # 连接后台统计线程完成信号 -> 主线程填充（线程安全的跨线程通信）
+        self._tab_computed.connect(self._apply_tab_result)
 
         # 恢复窗口布局
         geometry = self.settings.load_window_geometry()
@@ -361,7 +367,7 @@ class MaintenanceApp(QMainWindow):
         layout.addStretch()
 
         # 关于按钮
-        about_btn = QPushButton("关于 v3.0.1.0")
+        about_btn = QPushButton("关于")
         about_btn.setObjectName("ghostBtn")
         about_btn.setFont(QFont("Microsoft YaHei UI", 11))
         about_btn.clicked.connect(self._show_about)
@@ -584,7 +590,7 @@ class MaintenanceApp(QMainWindow):
         """显示关于对话框。"""
         # 用结构化数据 + QGridLayout 渲染，避免 Qt RichText 不支持现代 CSS 的问题
         rows = [
-            ("版本信息：", "3.0.2.0"),
+            ("版本信息：", "3.0.2.1"),
             ("制作人：", "Kevin"),
             ("主页：", "https://kkevinfeng.github.io/"),
             ("源代码：", "https://github.com/KKevinfeng/Contract-data-processing-3.git"),
@@ -792,13 +798,17 @@ class MaintenanceApp(QMainWindow):
 
         def worker():
             try:
-                raw_df = pd.read_excel(filepath, header=1)
-                col_map: dict[str, str] = {}
+                # 性能优化：10 万行大文件先只读表头行（nrows=0）确定所需列的位置，
+                # 再用 usecols 只读取需要的 6 列，避免 openpyxl 解析全部列（大幅减少耗时与 GIL 占用）
+                header_df = pd.read_excel(filepath, header=1, nrows=0)
+                all_cols = list(header_df.columns)
+                col_idx: dict[str, int] = {}
                 missing: list[str] = []
                 for keyword in self.REQUIRED_COL_KEYWORDS:
-                    found = [c for c in raw_df.columns if keyword in str(c)]
-                    if found:
-                        col_map[keyword] = found[0]
+                    for i, c in enumerate(all_cols):
+                        if keyword in str(c):
+                            col_idx[keyword] = i
+                            break
                     else:
                         missing.append(keyword)
 
@@ -808,9 +818,16 @@ class MaintenanceApp(QMainWindow):
                     log_error(f"文件 {filepath} 缺少必要列：{missing_text}")
                     return
 
-                result_df = raw_df[list(col_map.values())].rename(
-                    columns={v: k for k, v in col_map.items()}
-                ).copy()
+                # 按列索引只读所需列（usecols 用整数位置，速度更快）
+                # 注意：usecols 整数列表读取后，返回的 DataFrame 列名仍为原始列名，
+                # 因此直接用原始列名访问即可（不能用整数位置，会 KeyError）。
+                usecols = sorted(col_idx.values())
+                raw_df = pd.read_excel(filepath, header=1, usecols=usecols)
+
+                result_df = pd.DataFrame()
+                for keyword, idx in col_idx.items():
+                    col_name = all_cols[idx]
+                    result_df[keyword] = raw_df[col_name]
                 self._load_df = result_df
                 log_info(f"数据文件加载成功: {filepath}，共 {len(result_df)} 行")
             except FileNotFoundError:
@@ -906,12 +923,30 @@ class MaintenanceApp(QMainWindow):
         if popup is not None:
             popup.set_progress(progress, text)
 
-        try:
-            computed = tab.compute_data(self.df)
-            tab.populate(computed)
-        except Exception as e:
-            log_error(f"Tab {title} 计算失败: {e}")
+        # 性能优化：统计计算放到后台线程（compute_data 是纯 CPU/IO，可能耗时数秒，
+        # 在主线程会阻塞 UI 造成卡顿）。计算完成后用 Qt Signal（线程安全）通知主线程
+        # 回到主线程再 populate（Qt 控件必须在主线程）。
+        # 注意：不能从后台线程直接调用 QTimer.singleShot / 操作 Qt 控件，会线程不安全。
+        def _compute_and_apply():
+            try:
+                computed = tab.compute_data(self.df)
+            except Exception as e:
+                log_error(f"Tab {title} 计算失败: {e}")
+                computed = None
+            # emit 是线程安全的，主线程会自动调用 _apply_tab_result（槽）
+            self._tab_computed.emit(computed, title)
 
+        threading.Thread(target=_compute_and_apply, daemon=True).start()
+
+    def _apply_tab_result(self, computed, title):
+        if self._load_from_cache and getattr(self, "_cache_load_cancelled", False):
+            self._loading = False
+            return
+        if computed is not None:
+            try:
+                self._shared_tabs[self._load_step].populate(computed)
+            except Exception as e:
+                log_error(f"Tab {title} 填充失败: {e}")
         self._load_step += 1
         QTimer.singleShot(10, self._compute_next_tab)
 
