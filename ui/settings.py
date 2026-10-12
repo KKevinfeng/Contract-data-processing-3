@@ -42,13 +42,23 @@ class AppSettings:
         return str(val) if val else ""
 
     # ── 侧边栏 ──
+    # 注意：这里存的是 Tab 的 key（稳定身份）而不是行号 —— 导航支持拖动排序后，
+    # 行号会随顺序变化，只有 key 能稳定定位页面（见 TAB_STYLE.md 相关说明）。
 
-    def save_sidebar_index(self, index: int) -> None:
-        self._settings.setValue("sidebar/index", index)
+    def save_nav_order(self, keys: list[str]) -> None:
+        self._settings.setValue("sidebar/order", list(keys))
 
-    def load_sidebar_index(self) -> int:
-        val = self._settings.value("sidebar/index", 0)
-        return int(val) if val else 0
+    def load_nav_order(self) -> list[str]:
+        val = self._settings.value("sidebar/order", [])
+        if isinstance(val, str):        # QSettings 单个元素会退化成字符串
+            val = [val]
+        return [str(v) for v in (val or [])]
+
+    def save_last_tab(self, key: str) -> None:
+        self._settings.setValue("sidebar/last_tab", key)
+
+    def load_last_tab(self) -> str:
+        return str(self._settings.value("sidebar/last_tab", "") or "")
 
     # ── 通用读写 ──
 

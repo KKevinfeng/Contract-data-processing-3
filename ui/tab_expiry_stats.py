@@ -18,6 +18,7 @@ from ui.progress_popup import ProgressPopup
 from ui.column_filter_popup import ColumnFilterPopup
 from ui import cache_manager
 from ui.logger import log_error, log_info
+from ui.msg_box import confirm
 from utils import classify_contract, export_to_csv
 
 
@@ -26,6 +27,23 @@ class ExpiryStatsTab:
 
     SEQ_COL = "#"
     FILTER_KEYWORDS = ["客户意向", "不续保原因"]
+
+    # 导入前校验规则：(显示名, 是否必需, 命中关键字, 缺失影响)
+    # 过保文件本身无强制列，缺列只影响对应功能，故导入时一次性提示而非直接拒绝。
+    EXPIRY_COL_RULES = [
+        ("合同编号 / 合同编码", True, ("合同编号", "合同编码"),
+         "过保分析(Tab4)无法使用"),
+        ("客户意向", False, ("客户意向",),
+         "「客户意向」筛选与意向统计卡片不可用"),
+        ("不续保原因", False, ("不续保原因",),
+         "「不续保原因」筛选不可用"),
+        ("销售跟踪人", False, ("销售跟踪人",),
+         "「负责销售」筛选不可用"),
+        ("过保日期", False, ("过保日期",),
+         "「过保年份」及按年份筛选不可用"),
+        ("渠道大礼包最终客户", False, ("大礼包",),
+         "大礼包渠道标记不可用"),
+    ]
 
     def __init__(self, starred_cache=None):
         self.starred_cache = starred_cache
@@ -118,6 +136,35 @@ class ExpiryStatsTab:
             return None
         return getattr(self, "_popup", None)
 
+    # ── 导入前校验 ──
+
+    @classmethod
+    def _check_expiry_columns(cls, df: pd.DataFrame) -> list[tuple[str, bool, str]]:
+        """检查过保文件列是否齐全，返回缺失清单 [(显示名, 是否必需, 缺失影响)]。"""
+        if df is None:
+            return []
+        cols = [str(c).replace("\n", " ") for c in df.columns]
+        missing = []
+        for label, required, keywords, impact in cls.EXPIRY_COL_RULES:
+            if not any(any(k in c for k in keywords) for c in cols):
+                missing.append((label, required, impact))
+        return missing
+
+    def _confirm_import_missing_columns(self, missing: list[tuple[str, bool, str]]) -> bool:
+        """列出缺失列并询问是否仍要导入。返回 True 表示继续导入。"""
+        lines = []
+        for label, required, impact in missing:
+            mark = "✗" if required else "!"
+            tag = "（必需）" if required else ""
+            lines.append(f"{mark} {label}{tag} —— {impact}")
+        text = (
+            "导入的过保文件缺少以下列：\n\n"
+            + "\n".join(lines)
+            + "\n\n是否仍要导入？（缺失列对应的功能将不可用）"
+        )
+        log_info(f"过保文件缺失列检查：{len(missing)} 项（{'、'.join(m[0] for m in missing)}）")
+        return confirm(self.frame, "导入前检查", text)
+
     def _load_file(self):
         filepath = self.file_path_edit.text().strip()
         if not filepath:
@@ -198,6 +245,22 @@ class ExpiryStatsTab:
                     top._on_cache_load_item_done()
             QTimer.singleShot(100, lambda: QMessageBox.critical(self.frame, "错误", self._load_error))
             return
+
+        # 导入前校验：人工导入时一次性列出缺失列，由用户决定是否继续。
+        # 缓存自动加载不弹窗（启动阶段不打扰用户）。
+        if not self.load_from_cache:
+            missing = self._check_expiry_columns(self._load_df)
+            if missing:
+                # 先关闭读取进度弹窗，避免与确认弹窗形成嵌套模态
+                if self._popup is not None:
+                    self._popup.close()
+                    self._popup = None
+                if not self._confirm_import_missing_columns(missing):
+                    self._loading = False
+                    log_info("过保数据导入已取消：用户选择不再导入缺失列的文件")
+                    return
+                # 继续导入：重建进度弹窗供后续填充阶段使用
+                self._popup = ProgressPopup(self.frame, title="正在导入过保情况数据...")
 
         self.source_df = self._load_df
         self.active_filters.clear()

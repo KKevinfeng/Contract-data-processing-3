@@ -9,16 +9,19 @@ from PySide6.QtWidgets import (
     QStyle, QStyledItemDelegate,
 )
 from PySide6.QtCore import (
-    Qt, QModelIndex, Signal, QEvent, QObject,
+    Qt, QModelIndex, QEvent, Signal,
 )
 from PySide6.QtGui import (
     QStandardItemModel, QStandardItem, QColor, QFont, QPainter,
 )
 
-from ui.styles import (
-    FONT_TABLE_HEADER, FONT_TABLE_BODY, T,
-)
+from ui.styles import T
 from ui.logger import log_info
+from ui.filter_bar import EMPTY_LABEL, FilterBar, normalize_empty
+from ui.table_kit import (
+    SEQ_COL, STAR_COL,
+    apply_column_widths, build_table_view, format_cell, is_sortable_column,
+)
 from utils import export_to_csv
 
 
@@ -109,29 +112,17 @@ class TabSearchBar(QWidget):
 
 
 # ──────────────────────────────────────────────
-#  自定义 Header —— 禁止点击表头时选中整列（事件过滤器方式）
+#  自定义 Header 事件过滤器已统一到 ui/table_kit.py（见 TAB_STYLE.md S5/S12）
 # ──────────────────────────────────────────────
-class _HeaderClearFilter(QObject):
-    """事件过滤器：点击表头后立刻清除整列选中，消除闪烁。"""
-
-    def __init__(self, table: QTableView, parent=None):
-        super().__init__(parent)
-        self._table = table
-
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.MouseButtonPress:
-            obj.event(event)          # 正常交给 QHeaderView 处理（触发选中 + 排序信号）
-            self._table.clearSelection()  # 紧随其后清除列选中
-            return True               # 事件已处理，不再传播
-        return False
 
 
 # ──────────────────────────────────────────────
 #  QtBaseTab
 # ──────────────────────────────────────────────
 class QtBaseTab:
-    SEQ_COL = "#"
-    STAR_COL = "★"
+    # 与 ui.table_kit 保持一致（唯一来源），保留类属性便于子类引用
+    SEQ_COL = SEQ_COL
+    STAR_COL = STAR_COL
 
     def __init__(
         self,
@@ -142,6 +133,7 @@ class QtBaseTab:
         on_star_toggle=None,
         get_starred_names=None,
         search_column: str | None = None,
+        filter_columns: list | None = None,
     ):
         self.tab_name = tab_name
         self.columns = columns
@@ -150,16 +142,20 @@ class QtBaseTab:
         self._star_toggle_callback = on_star_toggle
         self._get_starred = get_starred_names
         self._search_column = search_column
+        # 筛选栏声明：[(列名, 显示名), ...]，见 TAB_STYLE.md S3
+        self._filter_columns = list(filter_columns) if filter_columns else []
 
         self.frame: QWidget | None = None
         self.table: QTableView | None = None
         self.model: QStandardItemModel | None = None
         self.search_bar: TabSearchBar | None = None
+        self.filter_bar: FilterBar | None = None
         self.source_df: pd.DataFrame | None = None
         self.sort_col: str | None = None
         self.sort_asc: bool = True
 
         self._search_text: str = ""
+        self._active_filters: dict[str, set] = {}
 
     # ── UI 构建 ──
 
@@ -192,17 +188,18 @@ class QtBaseTab:
             bar_w.setLayout(bar)
             outer.addWidget(bar_w)
 
-        # 表格
-        self.table = QTableView()
-        self.table.horizontalHeader().installEventFilter(_HeaderClearFilter(self.table, self.table.horizontalHeader()))
-        self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectItems)
-        self.table.horizontalHeader().setHighlightSections(False)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setFont(FONT_TABLE_HEADER)
-        self.table.setFont(FONT_TABLE_BODY)
-        self.table.setShowGrid(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setDefaultSectionSize(36)
+        # 筛选栏（可选，统一组件 FilterBar，见 TAB_STYLE.md S3）
+        if self._filter_columns:
+            self.filter_bar = FilterBar(
+                values_provider=self._filter_values,
+                on_change=self._on_filter_change,
+                parent=frame,
+            )
+            self.filter_bar.set_columns(self._filter_columns)
+            outer.addWidget(self.filter_bar)
+
+        # 表格（统一由 table_kit 创建，见 TAB_STYLE.md S5 / S12）
+        self.table = build_table_view(frame)
         self.table.doubleClicked.connect(self._on_double_click)
 
         outer.addWidget(self.table, 1)
@@ -222,6 +219,7 @@ class QtBaseTab:
         self._fill_table(self.source_df.copy())
 
     def _get_filtered_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = self._apply_column_filters(df, self._active_filters)
         if not self._search_text or not self._search_column:
             return df
         if self._search_column not in df.columns:
@@ -230,6 +228,42 @@ class QtBaseTab:
             self._search_text, case=False, na=False
         )]
 
+    # ── 筛选（统一组件 FilterBar，见 TAB_STYLE.md S3）──
+
+    @staticmethod
+    def _apply_column_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
+        """按列筛选；空值统一以「（空）」参与比较（与 FilterBar 取值口径一致）。"""
+        for col, selected in (filters or {}).items():
+            if col in df.columns:
+                df = df[normalize_empty(df[col]).isin(selected)]
+        return df
+
+    def _filter_values(self, col: str) -> list[str]:
+        """级联取值：计算某列全部可选值时，跳过该列自身的筛选。"""
+        if self.source_df is None or col not in self.source_df.columns:
+            return []
+        others = {c: s for c, s in self._active_filters.items() if c != col}
+        df = self._apply_column_filters(self.source_df, others)
+        return FilterBar.column_values(df[col])
+
+    def _on_filter_change(self, active: dict):
+        self._active_filters = dict(active)
+        if active:
+            detail = ", ".join(f"{c}({len(s)})" for c, s in active.items())
+            log_info(f"筛选 [{self.tab_name}]: {detail}")
+        else:
+            log_info(f"筛选 [{self.tab_name}]: 已清除")
+        # 筛选后行集合变化，排序状态重置（与其他 Tab 的既有行为一致）
+        self.sort_col = None
+        self.sort_asc = True
+        if self.source_df is not None:
+            self._fill_table(self.source_df.copy())
+
+    def clear_filters(self):
+        """清空全部筛选（供外部调用）。"""
+        if self.filter_bar is not None:
+            self.filter_bar.clear()
+
     # ── 数据 ──
 
     def compute_data(self, raw_df: pd.DataFrame) -> pd.DataFrame:
@@ -237,6 +271,10 @@ class QtBaseTab:
 
     def populate(self, df: pd.DataFrame):
         self.source_df = df.copy()
+        # 新数据到位后清空筛选（可选值已变化），见 TAB_STYLE.md S3
+        if self.filter_bar is not None:
+            self._active_filters = {}
+            self.filter_bar.select_all()
         self._fill_table(df)
 
     def _fill_table(self, df: pd.DataFrame):
@@ -277,7 +315,7 @@ class QtBaseTab:
 
             for col_idx in range(n_cols):
                 val = row[col_idx]
-                text = self._format_cell(val)
+                text = self._fmt_val(val)
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
@@ -291,17 +329,10 @@ class QtBaseTab:
         if self.has_star:
             self.table.setItemDelegateForColumn(0, _StarDelegate(self, self.table))
 
-        self.table.resizeColumnsToContents()
-        # 标星列宽固定
-        if self.has_star:
-            self.table.setColumnWidth(0, 50)
-        # 序号列固定
-        seq_col_idx = 1 if self.has_star else 0
-        self.table.setColumnWidth(seq_col_idx, 60)
-        # 第一列（标星或序号）居中
-        # 最后一列伸展
+        # 统一列宽策略（TAB_STYLE.md S5）：★ / # 固定宽、最后一列伸展
+        apply_column_widths(self.table, model)
+
         header = self.table.horizontalHeader()
-        header.setStretchLastSection(True)
 
         # 表头点击排序（只 connect 一次，避免每次 refresh 重复绑定）
         header.setSortIndicatorShown(True)
@@ -330,27 +361,27 @@ class QtBaseTab:
         # 未排过序：在第一个可排序列上显示 ↑ 作为提示
         for col_idx in range(self.model.columnCount()):
             col_name = self.model.headerData(col_idx, Qt.Orientation.Horizontal)
-            if col_name in (self.SEQ_COL, self.STAR_COL):
-                continue
-            if "名称" in col_name:
-                continue
-            if col_name in df.columns and pd.api.types.is_numeric_dtype(df[col_name].dtype):
+            if is_sortable_column(df, col_name):
                 header.setSortIndicator(col_idx, Qt.SortOrder.AscendingOrder)
                 return
 
         header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
 
-    # ── 格式化 ──
+    # ── 格式化 / 列名工具（统一命名，见 TAB_STYLE.md S11）──
+
+    # 唯一实现见 ui/table_kit.format_cell；_format_cell 为历史别名，新代码勿用
+    _fmt_val = staticmethod(format_cell)
+    _format_cell = staticmethod(format_cell)
 
     @staticmethod
-    def _format_cell(val) -> str:
-        if pd.isna(val):
-            return ""
-        if isinstance(val, float):
-            return f"{val:,.2f}"
-        if isinstance(val, int):
-            return f"{val:,}"
-        return str(val)
+    def _clean_col(col) -> str:
+        """列名清洗：去掉换行，供显示与筛选按钮文案使用。"""
+        return str(col).replace("\n", " ")
+
+    @staticmethod
+    def _reorder_columns(columns) -> list:
+        """列重排：默认原样返回；需要「重点列前置」的子类覆写。"""
+        return list(columns)
 
     # ── 排序 ──
 
@@ -368,19 +399,10 @@ class QtBaseTab:
         col_name = header_labels[logical_index]
         header = self.table.horizontalHeader()
 
-        if col_name in (self.SEQ_COL, self.STAR_COL):
+        # 统一排序规则（TAB_STYLE.md S4）：只有数字列可排序
+        if not is_sortable_column(self.source_df, col_name):
             header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
             return
-        if "名称" in col_name:
-            header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
-            return
-
-        # 只有数字列才能排序，文字列（如行业、客户名等）忽略
-        if self.source_df is not None and col_name in self.source_df.columns:
-            dtype = self.source_df[col_name].dtype
-            if not pd.api.types.is_numeric_dtype(dtype):
-                header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
-                return
 
         if self.sort_col == col_name:
             self.sort_asc = not self.sort_asc

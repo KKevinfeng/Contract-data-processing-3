@@ -8,7 +8,7 @@ import pandas as pd
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QListWidget,
     QListWidgetItem, QStackedWidget, QPushButton, QLabel,
-    QFileDialog, QApplication,
+    QFileDialog, QApplication, QAbstractItemView, QMenu,
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QFont
@@ -27,6 +27,7 @@ from ui.tab_expiry_stats import ExpiryStatsTab
 from ui.tab_product_sales import ProductSalesTab
 from ui.tab_industry import IndustryTab
 from ui.tab_customer_profile import CustomerProfileTab
+from ui.tab_implementation_unit import ImplementationUnitTab
 from ui.tab_renewal_analysis import RenewalAnalysisTab
 from ui.starred_cache import StarredCache
 from ui.starred_view import StarredView
@@ -34,6 +35,7 @@ from ui.starred_input_dialog import StarredInputDialog
 from ui.progress_popup import ProgressPopup
 from ui.industry_overrides import apply_overrides
 from ui.msg_box import info, warn, error, show_about
+from ui.filter_bar import EMPTY_LABEL, normalize_empty
 from ui.settings import AppSettings
 from ui import cache_manager
 from utils import classify_contract
@@ -126,16 +128,23 @@ class MetricRow(QWidget):
 #  Sidebar
 # ──────────────────────────────────────────────
 class Sidebar(QFrame):
-    """左侧侧边栏：Logo + 导航 + 底部操作。"""
+    """左侧侧边栏：Logo + 导航（可拖动排序）+ 底部操作。
 
-    nav_changed = Signal(int)
+    导航项的身份是 **Tab key**（存在 item 的 UserRole 里），不是行号：
+    用户拖动排序只改变显示顺序，业务逻辑仍按 key 定位页面。
+    """
+
+    nav_changed = Signal(str)            # 参数为 Tab key
+    nav_order_changed = Signal(list)     # 拖动排序后：新的 key 顺序
     starred_clicked = Signal()
     starred_input_clicked = Signal()
     error_log_clicked = Signal()
     run_log_clicked = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, items: list[tuple[str, str]], order: list[str] | None = None, parent=None):
+        """items: [(key, 显示名)]（默认顺序）；order: 已保存的 key 顺序（可为 None）。"""
         super().__init__(parent)
+        self._items = list(items)
         self.setObjectName("sidebarFrame")
         self.setFixedWidth(220)
 
@@ -159,21 +168,32 @@ class Sidebar(QFrame):
         logo_box.addWidget(sub)
         layout.addLayout(logo_box)
 
-        # ── 导航列表 ──
+        # ── 导航列表（支持拖动排序）──
         self.nav_list = QListWidget()
         self.nav_list.setObjectName("navList")
         self.nav_list.setFont(QFont("Microsoft YaHei UI", 12))
-        nav_items = [
-            "客户总金额", "客户分类", "过保情况",
-            "过保分析", "产品销量", "行业统计", "客户画像",
-        ]
-        for text in nav_items:
-            item = QListWidgetItem(text)
-            item.setSizeHint(QSize(0, 44))
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.nav_list.addItem(item)
-        self.nav_list.setCurrentRow(0)
-        self.nav_list.currentRowChanged.connect(self.nav_changed.emit)
+        self.nav_list.setDragEnabled(True)
+        self.nav_list.setAcceptDrops(True)
+        self.nav_list.setDropIndicatorShown(True)
+        self.nav_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.nav_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.nav_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        self.set_nav_items(order)
+        # 初始选中第 1 项（此刻信号尚未连接，不会触发切页）
+        if self.nav_list.count():
+            self.nav_list.setCurrentRow(0)
+
+        # 按 currentItemChanged（item 身份）而不是 currentRowChanged（行号）上报，
+        # 这样拖动排序改变行号时不会误触发切页
+        self.nav_list.currentItemChanged.connect(self._on_current_item_changed)
+        # 点击"已选中"的项（如启动后点第一个页）不会触发 currentItemChanged，补一个来源
+        self.nav_list.itemClicked.connect(
+            lambda item: self.nav_changed.emit(str(item.data(Qt.ItemDataRole.UserRole)))
+        )
+        self.nav_list.model().rowsMoved.connect(self._on_rows_moved)
+        self.nav_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.nav_list.customContextMenuRequested.connect(self._on_nav_context_menu)
         layout.addWidget(self.nav_list, 1)
 
         # ── 底部操作 ──
@@ -196,6 +216,76 @@ class Sidebar(QFrame):
 
         layout.addLayout(bottom)
 
+    # ── 导航项（按 key 管理）──
+
+    def set_nav_items(self, order: list[str] | None = None) -> None:
+        """按 order（key 列表）重建导航；order 中缺失的 key 按默认顺序补在后面。"""
+        names = dict(self._items)
+        ordered = [k for k in (order or []) if k in names]
+        ordered += [k for k, _ in self._items if k not in ordered]
+
+        self.nav_list.blockSignals(True)
+        self.nav_list.clear()
+        for key in ordered:
+            item = QListWidgetItem(names[key])
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            item.setSizeHint(QSize(0, 44))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.nav_list.addItem(item)
+        self.nav_list.blockSignals(False)
+
+    def nav_keys(self) -> list[str]:
+        """当前导航顺序（key 列表）。"""
+        return [
+            str(self.nav_list.item(i).data(Qt.ItemDataRole.UserRole))
+            for i in range(self.nav_list.count())
+        ]
+
+    def current_key(self) -> str:
+        item = self.nav_list.currentItem()
+        return str(item.data(Qt.ItemDataRole.UserRole)) if item is not None else ""
+
+    def set_current_key(self, key: str) -> bool:
+        """按 key 选中导航项（会触发 nav_changed）。
+
+        注意：若该项**已是当前项**，setCurrentRow 不会发出 currentItemChanged，
+        此时手动补发一次 —— 否则"导航高亮"与"实际显示页面"会不一致
+        （导航可拖动排序后，行号不再等于页号，这个补发是必需的）。
+        """
+        for i in range(self.nav_list.count()):
+            if self.nav_list.item(i).data(Qt.ItemDataRole.UserRole) == key:
+                if self.nav_list.currentRow() == i:
+                    self.nav_changed.emit(key)
+                else:
+                    self.nav_list.setCurrentRow(i)
+                return True
+        return False
+
+    # ── 拖动排序 ──
+
+    def _on_current_item_changed(self, current, _previous):
+        if current is not None:
+            self.nav_changed.emit(str(current.data(Qt.ItemDataRole.UserRole)))
+
+    def _on_rows_moved(self, *args):
+        self.nav_order_changed.emit(self.nav_keys())
+
+    def _on_nav_context_menu(self, pos):
+        menu = QMenu(self)
+        act_reset = menu.addAction("恢复默认顺序")
+        act_reset.setEnabled(self.nav_keys() != [k for k, _ in self._items])
+        menu.addSeparator()
+        hint = menu.addAction("提示：拖动导航项可调整顺序")
+        hint.setEnabled(False)
+
+        if menu.exec(self.nav_list.viewport().mapToGlobal(pos)) != act_reset:
+            return
+        keep = self.current_key()
+        self.set_nav_items()                    # 回到默认顺序
+        if not self.set_current_key(keep):      # 保持当前页面不变
+            self.nav_list.setCurrentRow(0)
+        self.nav_order_changed.emit(self.nav_keys())
+
 
 # ──────────────────────────────────────────────
 #  主窗口
@@ -211,14 +301,26 @@ class MaintenanceApp(QMainWindow):
         "合同金额（元）*", "一级行业", "二级行业",
     ]
 
-    TAB_TITLES = [
-        ("客户总金额", "按客户查看合同总额与年度趋势"),
-        ("客户分类", "按客户查看维保 / 产品 / 服务三种合同类型的金额分布"),
-        ("过保情况", "过保合同统计与续保分析"),
-        ("过保分析", "重点客户过保合同深度分析"),
-        ("产品销量", "各产品售卖台数与合并规则管理"),
-        ("行业统计", "按一级行业 / 二级行业下钻客户分布"),
-        ("客户画像", "客户产品清单与行业归属详情"),
+    # 可选列：存在则一并读取，缺失不报错（供特定 Tab 使用，如「实施单位统计」）
+    OPTIONAL_COL_KEYWORDS = [
+        "实施单位名称",
+        "实施情况",
+        "创建时间",
+        "合同负责人",
+    ]
+
+    # 页面注册表：(key, 中文名, 副标题)
+    # - key 是页面的**稳定身份**：导航拖动排序、设置持久化、跳转都按 key，不用行号；
+    # - 此处顺序即 stack 的挂载顺序（**不随导航拖动而变化**），故 stack 下标依旧稳定。
+    TABS = [
+        ("total",    "客户总金额",   "按客户查看合同总额与年度趋势"),
+        ("category", "客户分类",     "按客户查看维保 / 产品 / 服务三种合同类型的金额分布"),
+        ("expiry",   "过保情况",     "过保合同统计与续保分析"),
+        ("renewal",  "过保分析",     "重点客户过保合同深度分析"),
+        ("product",  "产品销量",     "各产品售卖台数与合并规则管理"),
+        ("industry", "行业统计",     "按一级行业 / 二级行业下钻客户分布"),
+        ("profile",  "客户画像",     "客户产品清单与行业归属详情"),
+        ("impl",     "实施单位统计", "按实施单位查看合同明细与实施情况"),
     ]
 
     def __init__(self):
@@ -230,6 +332,8 @@ class MaintenanceApp(QMainWindow):
         self.df: pd.DataFrame | None = None
         self.starred_cache = StarredCache()
         self.settings = AppSettings()
+        # key -> stack 下标（stable：stack 挂载顺序与 TABS 一致，不受导航拖动影响）
+        self._tab_index = {key: i for i, (key, _, _) in enumerate(self.TABS)}
 
         # 居中
         screen = QApplication.primaryScreen().availableGeometry()
@@ -251,9 +355,10 @@ class MaintenanceApp(QMainWindow):
         state = self.settings.load_window_state()
         if state is not None:
             self.restoreState(state)
-        idx = self.settings.load_sidebar_index()
-        if idx and self.sidebar.nav_list.count() > idx:
-            self.sidebar.nav_list.setCurrentRow(idx)
+        # 恢复上次所在的页面：按 key 定位（导航顺序变化也不会开错页）
+        last_key = self.settings.load_last_tab()
+        if last_key in self._tab_index:
+            self.sidebar.set_current_key(last_key)
 
     # ── 整体 UI ──
 
@@ -264,9 +369,13 @@ class MaintenanceApp(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Sidebar
-        self.sidebar = Sidebar()
+        # Sidebar（导航项按注册表配置；顺序取用户上次拖动后的顺序）
+        self.sidebar = Sidebar(
+            items=[(key, name) for key, name, _ in self.TABS],
+            order=self.settings.load_nav_order(),
+        )
         self.sidebar.nav_changed.connect(self._on_tab_changed)
+        self.sidebar.nav_order_changed.connect(self.settings.save_nav_order)
         self.sidebar.starred_clicked.connect(self._view_starred)
         self.sidebar.starred_input_clicked.connect(self._input_starred)
         self.sidebar.error_log_clicked.connect(self._view_error_log)
@@ -378,7 +487,7 @@ class MaintenanceApp(QMainWindow):
     # ── 构建 Tab ──
 
     def _build_tabs(self):
-        """构建 7 个 Tab 页面并放入 QStackedWidget。"""
+        """构建 8 个 Tab 页面并放入 QStackedWidget。"""
 
         # Tab 0: 客户总金额统计 — 接 sidebar 的 metric
         self.tab_customer_total = CustomerTotalTab(
@@ -426,12 +535,17 @@ class MaintenanceApp(QMainWindow):
         )
         self.stack.addWidget(self._wrap_tab(self.tab_customer_profile, idx=6))
 
+        # Tab 7: 实施单位统计（双击合同详情的处理在 Tab 内部）
+        self.tab_impl_unit = ImplementationUnitTab(on_double_click=None)
+        self.stack.addWidget(self._wrap_tab(self.tab_impl_unit, idx=7))
+
         self._shared_tabs = [
             self.tab_customer_total,
             self.tab_customer_category,
             self.tab_product_sales,
             self.tab_industry,
             self.tab_customer_profile,
+            self.tab_impl_unit,
         ]
 
     def _wrap_tab(self, tab, idx: int) -> QWidget:
@@ -446,13 +560,21 @@ class MaintenanceApp(QMainWindow):
 
     # ── Tab 切换 ──
 
-    def _on_tab_changed(self, idx: int):
-        if idx < 0 or idx >= self.stack.count():
+    def _on_tab_changed(self, key: str):
+        """导航切换（参数是 Tab key，不是行号 —— 见 Sidebar 说明）。"""
+        idx = self._tab_index.get(key)
+        if idx is None or idx >= self.stack.count():
             return
+        _, title, subtitle = self.TABS[idx]
+        already_shown = (
+            self.stack.currentIndex() == idx and self.heading_label.text() == title
+        )
         self.stack.setCurrentIndex(idx)
-        title, subtitle = self.TAB_TITLES[idx]
         self.heading_label.setText(title)
         self.subtitle_label.setText(subtitle)
+        if already_shown:
+            # 同一次点击可能来自两个信号（currentItemChanged + itemClicked），去重
+            return
 
         # 切换 metric 标签 + 计算对应数值
         self._refresh_metric_for_tab(idx)
@@ -476,6 +598,26 @@ class MaintenanceApp(QMainWindow):
                     f"{int((intent == '考虑中').sum()):,}",
                     f"{int((intent == '不续保').sum()):,}",
                 )
+            return
+
+        # Tab7「实施单位统计」：按「实施情况」统计三类合同数量
+        if idx == 7:
+            self.metric_row.ensure_count(3)
+            self.metric_row.set_labels("安恒实施", "代理商或客户自行实施", "不明确")
+            src = getattr(self.tab_impl_unit, "source_df", None)
+            if src is None or src.empty or "实施情况" not in src.columns:
+                self.metric_row.update_values("—", "—", "—")
+                return
+            try:
+                intent = normalize_empty(src["实施情况"])
+                self.metric_row.update_values(
+                    f"{int((intent == '安恒实施').sum()):,}",
+                    f"{int((intent == '代理商或客户自行实施').sum()):,}",
+                    f"{int((intent == EMPTY_LABEL).sum()):,}",
+                )
+            except Exception as e:
+                log_error(f"计算 Tab7 metric 失败: {e}")
+                self.metric_row.update_values("—", "—", "—")
             return
 
         # 其他 Tab 默认 3 卡
@@ -590,7 +732,7 @@ class MaintenanceApp(QMainWindow):
         """显示关于对话框。"""
         # 用结构化数据 + QGridLayout 渲染，避免 Qt RichText 不支持现代 CSS 的问题
         rows = [
-            ("版本信息：", "3.0.2.2"),
+            ("版本信息：", "3.1.0.0"),
             ("制作人：", "Kevin"),
             ("主页：", "https://kkevinfeng.github.io/"),
             ("源代码：", "https://github.com/KKevinfeng/Contract-data-processing-3.git"),
@@ -799,7 +941,7 @@ class MaintenanceApp(QMainWindow):
         def worker():
             try:
                 # 性能优化：10 万行大文件先只读表头行（nrows=0）确定所需列的位置，
-                # 再用 usecols 只读取需要的 6 列，避免 openpyxl 解析全部列（大幅减少耗时与 GIL 占用）
+                # 再用 usecols 只读取需要的列（必需列 + 可选列），避免 openpyxl 解析全部列
                 header_df = pd.read_excel(filepath, header=1, nrows=0)
                 all_cols = list(header_df.columns)
                 col_idx: dict[str, int] = {}
@@ -817,6 +959,15 @@ class MaintenanceApp(QMainWindow):
                     self._load_error = f"没有{missing_text}列，请提供正确的文件"
                     log_error(f"文件 {filepath} 缺少必要列：{missing_text}")
                     return
+
+                # 可选列：存在则一并读取，缺失不报错（如「实施单位名称」，供实施单位统计使用）
+                for keyword in self.OPTIONAL_COL_KEYWORDS:
+                    if keyword in col_idx:
+                        continue
+                    for i, c in enumerate(all_cols):
+                        if keyword in str(c):
+                            col_idx[keyword] = i
+                            break
 
                 # 按列索引只读所需列（usecols 用整数位置，速度更快）
                 # 注意：usecols 整数列表读取后，返回的 DataFrame 列名仍为原始列名，
@@ -909,7 +1060,10 @@ class MaintenanceApp(QMainWindow):
             return
 
         tab = tabs[i]
-        title = self.TAB_TITLES[i][0] if i < len(self.TAB_TITLES) else "..."
+        # 优先用 Tab 自身名称（_shared_tabs 的顺序与页面注册表并不一致，不能按下标取）
+        title = getattr(tab, "tab_name", None) or (
+            self.TABS[i][1] if i < len(self.TABS) else "..."
+        )
         # 统计阶段：20% ~ 95%，每个 Tab 精确推进。
         # 缓存模式：显示 = 实际 × 2（封顶 95%），真实完成时才由 _finish_cache_load 设 100%
         progress = 0.20 + 0.75 * ((i + 1) / total)
@@ -1031,15 +1185,18 @@ class MaintenanceApp(QMainWindow):
                 f"产品合并规则已应用（{rule_count} 条）— 共 {len(self.df)} 行合同数据"
             )
             log_info(f"产品合并规则已应用，共 {rule_count} 条")
-            self._switch_to_tab(4)
+            self._switch_to_tab("product")
         except Exception as e:
             log_error("产品合并刷新失败")
             error(self, "错误", f"刷新产品销量数据失败：\n{e}")
 
-    def _switch_to_tab(self, idx: int):
-        if 0 <= idx < self.stack.count():
-            self.stack.setCurrentIndex(idx)
-            self.sidebar.nav_list.setCurrentRow(idx)
+    def _switch_to_tab(self, key: str):
+        """按 key 切页（导航顺序变化也能正确定位）。"""
+        idx = self._tab_index.get(key)
+        if idx is None or idx >= self.stack.count():
+            return
+        self.stack.setCurrentIndex(idx)
+        self.sidebar.set_current_key(key)
 
     # ── 双击事件 ──
 
@@ -1112,6 +1269,8 @@ class MaintenanceApp(QMainWindow):
         """保存窗口状态后安全退出。"""
         self.settings.save_window_geometry(self.saveGeometry())
         self.settings.save_window_state(self.saveState())
-        self.settings.save_sidebar_index(self.sidebar.nav_list.currentRow())
+        # 保存"上次所在页"（key）与导航顺序（key 列表）—— 不用行号，顺序变化也不会错位
+        self.settings.save_last_tab(self.sidebar.current_key())
+        self.settings.save_nav_order(self.sidebar.nav_keys())
         self.settings.sync()
         event.accept()

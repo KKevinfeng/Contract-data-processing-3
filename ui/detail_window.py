@@ -19,7 +19,13 @@ class CustomerDetailWindow:
     """弹出窗口：展示某客户在原始数据中的合同记录。"""
 
     @classmethod
-    def show(cls, parent, df: pd.DataFrame, title_text: str, customer_name: str):
+    def show(cls, parent, df: pd.DataFrame, title_text: str, customer_name: str,
+             show_export: bool = True):
+        """展示合同详情。
+
+        参数:
+            show_export: 是否显示底部「导出 CSV」按钮（实施单位统计等页面要求隐藏）。
+        """
         dialog = QDialog(parent)
 
         configure_dialog(dialog)
@@ -116,14 +122,16 @@ class CustomerDetailWindow:
 
         layout.addWidget(splitter)
 
-        # 底部按钮
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
+        # 底部按钮（show_export=False 时整行不渲染）
+        if show_export:
+            btn_layout = QHBoxLayout()
+            btn_layout.addStretch()
 
-        export_btn = QPushButton("导出 CSV")
-        export_btn.setObjectName("accentBtn")
-        export_btn.clicked.connect(lambda: export_to_csv(df, dialog, f"合同详情_{customer_name}.csv"))
-        btn_layout.addWidget(export_btn)
+            export_btn = QPushButton("导出 CSV")
+            export_btn.setObjectName("accentBtn")
+            export_btn.clicked.connect(lambda: export_to_csv(df, dialog, f"合同详情_{customer_name}.csv"))
+            btn_layout.addWidget(export_btn)
 
-        layout.addLayout(btn_layout)
+            layout.addLayout(btn_layout)
+
         dialog.exec()

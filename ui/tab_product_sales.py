@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QPushButton, QMessageBox, QHeaderView
 from PySide6.QtCore import Qt
 
 from ui.base_tab import QtBaseTab
-from data_processor import compute_product_sales, get_product_p_contracts
+from data_processor import compute_product_sales
 from ui.merge_dialog import ProductMergeDialog
 from ui.logger import log_error, log_info
 
