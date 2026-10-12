@@ -116,9 +116,13 @@ def compute_product_sales(df: pd.DataFrame, merge_rules=None) -> pd.DataFrame:
     df_p = df[df["合同类型"] == "P"]
 
     # 解析产品行并汇总（性能优化：itertuples 替代 iterrows，快 5~10 倍）
+    # 注意：df 传入列序可能因外层添加"合同类型"等列而变化，必须动态获取"产品名称型号"的列位置，
+    # 不能用硬编码索引（否则会取错列导致 KeyError）。
+    col_names = list(df_p.columns)
+    prod_idx = col_names.index("产品名称型号")
     product_totals: dict[str, int] = {}
     for row in df_p.itertuples(index=False):
-        products = parse_product_lines(row[2])  # 第3列 = 产品名称型号
+        products = parse_product_lines(row[prod_idx])
         for p in products:
             name = p["name"]
             product_totals[name] = product_totals.get(name, 0) + p["qty"]
@@ -136,6 +140,12 @@ def compute_product_sales(df: pd.DataFrame, merge_rules=None) -> pd.DataFrame:
             target = name_map.get(name, name)
             merged_totals[target] = merged_totals.get(target, 0) + qty
         product_totals = merged_totals
+
+    if not product_totals:
+        # 无 P 类合同（或产品解析为空）时，返回空表，避免 sort_values 因列不存在而 KeyError
+        empty = pd.DataFrame(columns=["产品名称", "售卖总台数"])
+        log_info("产品销量统计完成: 0 个产品（无 P 类合同）")
+        return empty
 
     result = pd.DataFrame(
         [{"产品名称": k, "售卖总台数": v} for k, v in product_totals.items()]
@@ -262,17 +272,23 @@ def get_product_p_contracts(df: pd.DataFrame, product_name: str, merge_rules=Non
             target_names = merge_rules[product_name]
 
     # 筛选包含目标产品的合同行（性能优化：itertuples 替代 iterrows）
-    # df_p 列序：0=合同编号*, 1=最终客户名称, 2=产品名称型号, 3=合同金额
+    # 注意：df 传入列序可能因外层添加"合同类型"列而变化，必须动态获取各列位置，
+    # 不能用硬编码索引（否则取错列导致结果错误/KeyError）。
+    col_names = list(df_p.columns)
+    idx_cno = col_names.index("合同编号*")
+    idx_cust = col_names.index("最终客户名称")
+    idx_prod = col_names.index("产品名称型号")
+    idx_amt = col_names.index("合同金额（元）*")
     matched_rows = []
     for row in df_p.itertuples(index=False):
-        products = parse_product_lines(row[2])
+        products = parse_product_lines(row[idx_prod])
         row_names = {p["name"] for p in products}
         if row_names & target_names:
             matched_rows.append({
-                "合同编号*": row[0],
-                "最终客户名称": row[1],
-                "产品名称型号": row[2],
-                "合同金额（元）*": row[3],
+                "合同编号*": row[idx_cno],
+                "最终客户名称": row[idx_cust],
+                "产品名称型号": row[idx_prod],
+                "合同金额（元）*": row[idx_amt],
             })
 
     if not matched_rows:

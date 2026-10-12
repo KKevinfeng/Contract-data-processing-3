@@ -8,9 +8,9 @@ import threading
 import pandas as pd
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableView, QHeaderView,
-    QPushButton, QLineEdit, QLabel, QFileDialog, QMessageBox,
+    QPushButton, QLineEdit, QLabel, QFileDialog, QMessageBox, QApplication,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEventLoop
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QFont
 
 from ui.expiry_starred_view import ExpiryStarredView
@@ -205,10 +205,19 @@ class ExpiryStatsTab:
         self.sort_asc = True
 
         popup = self._progress_popup()
+        # 分块填充期间平滑推进进度（10% ~ 95%），避免"读取完直接跳100%"的突兀感。
+        # 注意：缓存加载时 _progress_popup() 恒返回 None（见其文档字符串），
+        # 此时进度由主数据启动弹窗统一驱动，本回调直接跳过即可。
+        def _fill_progress(pct):
+            nonlocal popup
+            popup = self._progress_popup()
+            if popup is None:
+                return
+            popup.set_progress(0.10 + pct * 0.85, f"正在处理过保数据... {int(pct * 100)}%")
+
         if popup is not None:
-            show = 0.10 if not self.load_from_cache else min(0.10 * 2.0, 0.95)
-            popup.set_progress(show, "正在处理过保数据...")
-        self._fill_table(self._load_df)
+            popup.set_progress(0.10, "正在处理过保数据... 0%")
+        self._fill_table(self._load_df, progress_callback=_fill_progress)
         # 缓存模式：不在此处设 100%（避免与主数据并发回退），由 _finish_cache_load 统一关闭
         if not self.load_from_cache:
             if popup is not None:
@@ -302,32 +311,85 @@ class ExpiryStatsTab:
         result += [c for c in cols if c not in result]
         return result
 
-    def _fill_table(self, df: pd.DataFrame):
+    def _fill_table(self, df: pd.DataFrame, progress_callback=None):
+        """填充表格。大数据量时用 itertuples + 分块，避免一次性阻塞主线程，
+        并通过 progress_callback 平滑推进进度（0~1）。"""
         self._display_df = df.copy()
         reordered = self._reorder_columns(list(df.columns))
         display = [self.SEQ_COL] + reordered
         self.columns_display = display
 
-        model = QStandardItemModel(len(df), len(display))
+        n = len(df)
+        model = QStandardItemModel(n, len(display))
         model.setHorizontalHeaderLabels(display)
 
-        for row_idx, (_, row) in enumerate(df.iterrows()):
-            # 序号
-            item = QStandardItem(str(row_idx + 1))
+        seq_col = display.index(self.SEQ_COL)
+        # 关键：itertuples 按 df 原始列序返回，而 reordered 是重排后的显示顺序。
+        # 需要建立"每个显示列在原始 df 中的位置"，才能正确取 row[原始位置]。
+        orig_columns = list(df.columns)
+        # orig_pos[显示列名] = 该列在原始 df 中的位置；reordered 里的列必然在 orig_columns 中
+        orig_pos_list = [orig_columns.index(col) for col in reordered]
+
+        # 分块填充，块间让出事件循环并更新进度，避免进度条卡住后突跳 100%
+        chunk = max(2000, n // 50) if n > 2000 else n
+        it = df.itertuples(index=False)
+        batch = []
+        done = 0
+        for row in it:
+            batch.append(row)
+            if len(batch) >= chunk:
+                self._write_batch(model, batch, done, reordered, orig_pos_list, seq_col)
+                done += len(batch)
+                batch = []
+                if progress_callback is not None:
+                    progress_callback(done / n if n else 1.0)
+                # 只处理绘制等非输入事件：进度条能正常刷新，但填充过程中用户的
+                # 点击（排序/筛选）不会被处理，避免重入本函数导致模型错乱。
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+        if batch:
+            self._write_batch(model, batch, done, reordered, orig_pos_list, seq_col)
+            done += len(batch)
+            if progress_callback is not None:
+                progress_callback(done / n if n else 1.0)
+
+        self.table.setModel(model)
+        # 列宽估算：全量 resizeColumnsToContents 在 10 万行×多列时极慢（卡住主线程），
+        # 因此大数据量时只按表头 + 前 50 行文本估算列宽，兼顾可读性与性能。
+        try:
+            if n <= 50:
+                self.table.resizeColumnsToContents()
+            else:
+                header = self.table.horizontalHeader()
+                fm = header.fontMetrics()
+                for col in range(model.columnCount()):
+                    title = model.headerData(
+                        col, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole
+                    )
+                    width = fm.horizontalAdvance(str(title or ""))
+                    for r in range(min(50, n)):
+                        text = model.data(model.index(r, col))
+                        if text:
+                            width = max(width, fm.horizontalAdvance(str(text)))
+                    header.resizeSection(col, min(width + 24, 500))
+        except Exception:
+            pass
+
+    def _write_batch(self, model, batch, start_idx, reordered, orig_pos_list, seq_col):
+        """把一批 itertuples 写入 model（itertuples 比 iterrows 快 5~10 倍）。
+        orig_pos_list[i] = reordered[i] 在原始 df 中的位置，用于正确取值。"""
+        for row_idx, row in enumerate(batch):
+            abs_idx = start_idx + row_idx
+            item = QStandardItem(str(abs_idx + 1))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
-            model.setItem(row_idx, 0, item)
-
+            model.setItem(abs_idx, seq_col, item)
             for col_idx, col in enumerate(reordered):
-                val = row[col]
+                val = row[orig_pos_list[col_idx]]
                 text = self._fmt_val(val)
                 item = QStandardItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setFlags(Qt.ItemFlag(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable))
-                model.setItem(row_idx, col_idx + 1, item)
-
-        self.table.setModel(model)
-        self.table.resizeColumnsToContents()
+                model.setItem(abs_idx, col_idx + 1, item)
 
     # ── 筛选栏 ──
 
